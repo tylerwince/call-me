@@ -1,8 +1,12 @@
-import Twilio from 'twilio';
 import WebSocket from 'ws';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import OpenAI from 'openai';
 import { startCallTracking, endCallTracking } from './billing.js';
+import {
+  loadProviderConfig,
+  createProviders,
+  validateProviderConfig,
+  type ProviderRegistry,
+} from './providers/index.js';
 
 interface CallState {
   callId: string;
@@ -13,37 +17,35 @@ interface CallState {
   startTime: number;
 }
 
-interface ServerConfig {
-  twilioAccountSid: string;
-  twilioAuthToken: string;
-  twilioPhoneNumber: string;
-  openaiApiKey: string;
+export interface ServerConfig {
   publicUrl: string;
   port: number;
+  phoneNumber: string;
+  providers: ProviderRegistry;
 }
 
 export function loadServerConfig(): ServerConfig {
-  const required = [
-    'TWILIO_ACCOUNT_SID',
-    'TWILIO_AUTH_TOKEN',
-    'TWILIO_PHONE_NUMBER',
-    'OPENAI_API_KEY',
-    'PUBLIC_URL',
-  ];
+  // Load and validate provider configuration
+  const providerConfig = loadProviderConfig();
+  const errors = validateProviderConfig(providerConfig);
 
-  const missing = required.filter((key) => !process.env[key]);
-
-  if (missing.length > 0) {
-    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  // Check for PUBLIC_URL
+  if (!process.env.PUBLIC_URL) {
+    errors.push('Missing PUBLIC_URL');
   }
 
+  if (errors.length > 0) {
+    throw new Error(`Missing required configuration:\n  - ${errors.join('\n  - ')}`);
+  }
+
+  // Create providers
+  const providers = createProviders(providerConfig);
+
   return {
-    twilioAccountSid: process.env.TWILIO_ACCOUNT_SID!,
-    twilioAuthToken: process.env.TWILIO_AUTH_TOKEN!,
-    twilioPhoneNumber: process.env.TWILIO_PHONE_NUMBER!,
-    openaiApiKey: process.env.OPENAI_API_KEY!,
     publicUrl: process.env.PUBLIC_URL!,
     port: parseInt(process.env.PORT || '3333', 10),
+    phoneNumber: providerConfig.phoneNumber,
+    providers,
   };
 }
 
@@ -51,16 +53,12 @@ export class CallManager {
   private activeCalls = new Map<string, CallState>();
   private httpServer: ReturnType<typeof createServer> | null = null;
   private wss: WebSocket.Server | null = null;
-  private twilioClient: Twilio.Twilio;
-  private openai: OpenAI;
   private config: ServerConfig;
   private currentCallId = 0;
   private mcpHandler: ((req: IncomingMessage, res: ServerResponse) => void) | null = null;
 
   constructor(config: ServerConfig) {
     this.config = config;
-    this.twilioClient = Twilio(config.twilioAccountSid, config.twilioAuthToken);
-    this.openai = new OpenAI({ apiKey: config.openaiApiKey });
   }
 
   setMcpHandler(handler: (req: IncomingMessage, res: ServerResponse) => void): void {
@@ -77,23 +75,27 @@ export class CallManager {
         return;
       }
 
-      // Twilio TwiML endpoint
+      // TwiML/TeXML endpoint for phone providers
       if (url.pathname === '/twiml') {
-        const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="wss://${new URL(this.config.publicUrl).host}/media-stream" />
-  </Connect>
-</Response>`;
+        const streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
+        const xml = this.config.providers.phone.getStreamConnectXml(streamUrl);
         res.writeHead(200, { 'Content-Type': 'application/xml' });
-        res.end(twiml);
+        res.end(xml);
         return;
       }
 
       // Health check
       if (url.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', activeCalls: this.activeCalls.size }));
+        res.end(JSON.stringify({
+          status: 'ok',
+          activeCalls: this.activeCalls.size,
+          providers: {
+            phone: this.config.providers.phone.name,
+            stt: this.config.providers.stt.name,
+            tts: this.config.providers.tts.name,
+          },
+        }));
         return;
       }
 
@@ -101,7 +103,7 @@ export class CallManager {
       res.end('Not Found');
     });
 
-    // WebSocket server for Twilio media streams
+    // WebSocket server for media streams
     this.wss = new WebSocket.Server({ noServer: true });
 
     this.httpServer.on('upgrade', (request: IncomingMessage, socket: any, head: Buffer) => {
@@ -116,7 +118,7 @@ export class CallManager {
     });
 
     this.wss.on('connection', (ws) => {
-      console.error('Twilio WebSocket connected');
+      console.error('Media stream WebSocket connected');
       ws.on('message', (message: string) => {
         try {
           const msg = JSON.parse(message.toString());
@@ -125,7 +127,7 @@ export class CallManager {
             for (const [callId, state] of this.activeCalls.entries()) {
               if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
                 state.ws = ws;
-                console.error(`Associated streamSid ${streamSid} with callId ${callId}`);
+                console.error(`Associated stream ${streamSid} with call ${callId}`);
                 break;
               }
             }
@@ -137,7 +139,7 @@ export class CallManager {
     });
 
     this.httpServer.listen(this.config.port, () => {
-      console.error(`Hey Boss SaaS server listening on port ${this.config.port}`);
+      console.error(`Hey Boss server listening on port ${this.config.port}`);
       console.error(`MCP endpoint: ${this.config.publicUrl}/mcp`);
     });
   }
@@ -162,14 +164,13 @@ export class CallManager {
     startCallTracking(callId, userId);
 
     try {
-      const call = await this.twilioClient.calls.create({
-        url: `${this.config.publicUrl}/twiml`,
-        to: userPhoneNumber,
-        from: this.config.twilioPhoneNumber,
-        timeout: 60,
-      });
+      const callSid = await this.config.providers.phone.initiateCall(
+        userPhoneNumber,
+        this.config.phoneNumber,
+        `${this.config.publicUrl}/twiml`
+      );
 
-      console.error(`Call initiated: ${call.sid} -> ${userPhoneNumber} (callId: ${callId})`);
+      console.error(`Call initiated: ${callSid} -> ${userPhoneNumber} (callId: ${callId})`);
 
       const ws = await this.waitForConnection(callId, 15000);
       state.ws = ws;
@@ -215,8 +216,8 @@ export class CallManager {
     const durationSeconds = Math.round((Date.now() - state.startTime) / 1000);
     this.activeCalls.delete(callId);
 
-    const usage = endCallTracking(callId);
-    console.error(`Call ${callId} ended. Duration: ${durationSeconds}s, Cost: ${usage?.costCents || 0}¢`);
+    endCallTracking(callId);
+    console.error(`Call ${callId} ended. Duration: ${durationSeconds}s`);
 
     return { durationSeconds };
   }
@@ -244,18 +245,11 @@ export class CallManager {
   private async speak(state: CallState, text: string): Promise<void> {
     console.error(`[${state.callId}] Speaking: ${text.substring(0, 50)}...`);
 
-    const audioResponse = await this.openai.audio.speech.create({
-      model: 'tts-1',
-      voice: 'onyx',
-      input: text,
-      response_format: 'pcm',
-      speed: 1.0,
-    });
-
-    const arrayBuffer = await audioResponse.arrayBuffer();
-    const pcmData = Buffer.from(arrayBuffer);
+    // Use TTS provider to synthesize speech
+    const pcmData = await this.config.providers.tts.synthesize(text);
     const muLawData = this.pcmToMuLaw(pcmData);
 
+    // Send audio in chunks
     const chunkSize = 160;
     for (let i = 0; i < muLawData.length; i += chunkSize) {
       const chunk = muLawData.slice(i, i + chunkSize);
@@ -268,6 +262,7 @@ export class CallManager {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
 
+    // Wait for speech to finish
     await new Promise((resolve) => setTimeout(resolve, text.length * 50));
   }
 
@@ -313,17 +308,8 @@ export class CallManager {
     const fullAudio = Buffer.concat(audioChunks);
     const wavBuffer = this.muLawToWav(fullAudio);
 
-    try {
-      const file = new File([wavBuffer], 'audio.wav', { type: 'audio/wav' });
-      const transcription = await this.openai.audio.transcriptions.create({
-        file,
-        model: 'whisper-1',
-      });
-      return transcription.text;
-    } catch (error) {
-      console.error('Transcription error:', error);
-      return '[transcription failed]';
-    }
+    // Use STT provider
+    return await this.config.providers.stt.transcribe(wavBuffer);
   }
 
   private pcmToMuLaw(pcmData: Buffer): Buffer {

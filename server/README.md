@@ -13,12 +13,27 @@ For personal use, just set `SELF_HOST_PHONE`:
 cd server
 bun install
 
-export TWILIO_ACCOUNT_SID=ACxxxxx
-export TWILIO_AUTH_TOKEN=xxxxx
-export TWILIO_PHONE_NUMBER=+1234567890
+# Phone provider (Telnyx is default, ~50% cheaper than Twilio)
+export PHONE_PROVIDER=telnyx
+export PHONE_ACCOUNT_SID=xxxxx       # Telnyx Connection ID
+export PHONE_AUTH_TOKEN=xxxxx        # Telnyx API Key
+export PHONE_NUMBER=+1234567890
+
+# Or use Twilio
+# export PHONE_PROVIDER=twilio
+# export PHONE_ACCOUNT_SID=ACxxxxx
+# export PHONE_AUTH_TOKEN=xxxxx
+
+# STT & TTS
 export OPENAI_API_KEY=sk-xxxxx
+export TTS_PROVIDER=chatterbox       # Free self-hosted TTS
+export CHATTERBOX_URL=http://localhost:5100
+
 export PUBLIC_URL=https://your-server.com
-export SELF_HOST_PHONE=+1234567890  # Your phone
+export SELF_HOST_PHONE=+1234567890   # Your phone
+
+# Start Chatterbox TTS (optional but recommended)
+docker run -d -p 5100:5100 resemble-ai/chatterbox
 
 bun run dev
 ```
@@ -42,17 +57,23 @@ cp .env.example .env
 Edit `.env`:
 
 ```bash
-# Required
-TWILIO_ACCOUNT_SID=ACxxxxx
-TWILIO_AUTH_TOKEN=xxxxx
-TWILIO_PHONE_NUMBER=+1234567890
+# Phone provider
+PHONE_PROVIDER=telnyx              # or 'twilio'
+PHONE_ACCOUNT_SID=xxxxx
+PHONE_AUTH_TOKEN=xxxxx
+PHONE_NUMBER=+1234567890
+
+# STT & TTS
 OPENAI_API_KEY=sk-xxxxx
+TTS_PROVIDER=chatterbox            # or 'openai'
+CHATTERBOX_URL=http://localhost:5100
+
 PUBLIC_URL=https://api.heyboss.io
 
 # Stripe Subscription
 STRIPE_SECRET_KEY=sk_live_xxxxx
 STRIPE_WEBHOOK_SECRET=whsec_xxxxx
-STRIPE_PRICE_ID=price_xxxxx  # Your subscription price ID
+STRIPE_PRICE_ID=price_xxxxx
 
 # Plan: $20/month, 60 minutes
 MONTHLY_PRICE_CENTS=2000
@@ -100,7 +121,7 @@ bun run start # Production
 ┌─────────────────────────────────────────────────────────────┐
 │  Hey Boss Server                                            │
 │                                                             │
-│  Web Pages          MCP Server         Twilio               │
+│  Web Pages          MCP Server         Phone Provider       │
 │  • /signup          • /mcp             • /twiml             │
 │  • /dashboard       • Auth             • /media-stream      │
 │  • /login           • Tools                                 │
@@ -111,6 +132,45 @@ bun run start # Production
 │  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## Providers
+
+The server uses a provider abstraction for phone, speech-to-text, and text-to-speech services.
+
+### Phone Providers
+
+| Provider | Cost | Notes |
+|----------|------|-------|
+| **Telnyx** (default) | ~$0.005/min | 50% cheaper than Twilio, TeXML compatible |
+| Twilio | ~$0.01/min | Industry standard, well-documented |
+
+### STT Providers
+
+| Provider | Model | Cost | Notes |
+|----------|-------|------|-------|
+| **OpenAI** | gpt-4o-mini-transcribe (default) | $0.003/min | 50% cheaper, faster |
+| OpenAI | whisper-1 | $0.006/min | Original Whisper model |
+
+### TTS Providers
+
+| Provider | Cost | Notes |
+|----------|------|-------|
+| **Chatterbox** (default) | Free | Self-hosted, MIT licensed, high quality |
+| OpenAI | $15/1M chars | Cloud-based, no self-hosting needed |
+
+### Running Chatterbox
+
+Chatterbox is a free, self-hosted TTS that sounds better than most paid alternatives:
+
+```bash
+# Docker (recommended)
+docker run -d -p 5100:5100 resemble-ai/chatterbox
+
+# Or with GPU
+docker run -d --gpus all -p 5100:5100 resemble-ai/chatterbox
+```
+
+If Chatterbox is unavailable, set `TTS_PROVIDER=openai` to use OpenAI TTS as fallback.
 
 ## Subscription & Credits
 
@@ -138,20 +198,52 @@ bun run start # Production
 
 ## Environment Variables
 
-| Variable | Mode | Description |
-|----------|------|-------------|
-| `TWILIO_*` | Both | Twilio credentials |
-| `OPENAI_API_KEY` | Both | OpenAI key |
-| `PUBLIC_URL` | Both | Server URL |
-| `SELF_HOST_PHONE` | Self-host | Your phone (enables self-host) |
-| `SELF_HOST_API_KEY` | Self-host | Optional custom API key |
-| `DATABASE_PATH` | SaaS | SQLite path |
-| `STRIPE_SECRET_KEY` | SaaS | Stripe key |
-| `STRIPE_WEBHOOK_SECRET` | SaaS | Webhook secret |
-| `STRIPE_PRICE_ID` | SaaS | Subscription price ID |
-| `MONTHLY_PRICE_CENTS` | SaaS | Price in cents (2000 = $20) |
-| `MONTHLY_MINUTES` | SaaS | Minutes per month |
-| `CREDIT_PRICE_PER_MINUTE` | SaaS | Credit price in cents (50 = $0.50) |
+### Phone Provider
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PHONE_PROVIDER` | `telnyx` | Phone provider: `telnyx` or `twilio` |
+| `PHONE_ACCOUNT_SID` | - | Connection ID (Telnyx) or Account SID (Twilio) |
+| `PHONE_AUTH_TOKEN` | - | API Key (Telnyx) or Auth Token (Twilio) |
+| `PHONE_NUMBER` | - | Your phone number for outbound calls |
+
+Legacy Twilio vars also work: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`
+
+### STT/TTS Providers
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | - | Required for STT (and OpenAI TTS) |
+| `STT_MODEL` | `gpt-4o-mini-transcribe` | STT model: `gpt-4o-mini-transcribe` or `whisper-1` |
+| `TTS_PROVIDER` | `chatterbox` | TTS provider: `chatterbox` or `openai` |
+| `CHATTERBOX_URL` | `http://localhost:5100` | Chatterbox server URL |
+| `TTS_VOICE` | `onyx` | Voice: alloy, echo, fable, onyx, nova, shimmer |
+
+### Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PUBLIC_URL` | - | Server URL (HTTPS required) |
+| `PORT` | `3333` | Server port |
+
+### Self-Host Mode
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SELF_HOST_PHONE` | - | Your phone (enables self-host mode) |
+| `SELF_HOST_API_KEY` | `self-host` | Optional custom API key |
+
+### SaaS Mode
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_PATH` | `./heyboss.db` | SQLite database path |
+| `STRIPE_SECRET_KEY` | - | Stripe secret key |
+| `STRIPE_WEBHOOK_SECRET` | - | Stripe webhook secret |
+| `STRIPE_PRICE_ID` | - | Subscription price ID |
+| `MONTHLY_PRICE_CENTS` | `2000` | Subscription price ($20) |
+| `MONTHLY_MINUTES` | `60` | Minutes per month |
+| `CREDIT_PRICE_PER_MINUTE` | `50` | Credit price ($0.50/min) |
 
 ## Deployment
 
