@@ -1,25 +1,25 @@
-# Hey Boss
+# CallMe
 
 **Claude Code Plugin** - Claude calls you on the phone when it needs your input or wants to report progress.
 
 ## Install
 
 ```
-/plugin marketplace add ZeframLou/hey-boss
-/plugin install hey-boss@hey-boss
+/plugin marketplace add ZeframLou/callme
+/plugin install callme@callme
 ```
 
 Set your API key:
 
 ```bash
-export HEY_BOSS_API_KEY=sk_your_api_key_here
+export CALLME_API_KEY=sk_your_api_key_here
 ```
 
 Restart Claude Code. Done!
 
 ## Get an API Key
 
-Sign up at [heyboss.io](https://heyboss.io) to get your API key. You'll provide your phone number during signup - that's where Claude will call you.
+Sign up at [callme.dev](https://callme.dev) to get your API key. You'll provide your phone number during signup - that's where Claude will call you.
 
 ## Pricing
 
@@ -30,7 +30,7 @@ Need more? Purchase additional credits at **$0.50/minute**. Credits are used aft
 ## How It Works
 
 ```
-Claude Code                         Hey Boss Cloud
+Claude Code                         CallMe Cloud
     │                                    │
     │  "I finished the feature..."       │
     ▼                                    ▼
@@ -86,7 +86,7 @@ Claude won't call for simple yes/no questions.
 ## Troubleshooting
 
 ### Claude doesn't use the tool
-1. Check `HEY_BOSS_API_KEY` is set in your environment
+1. Check `CALLME_API_KEY` is set in your environment
 2. Restart Claude Code after installing the plugin
 3. Try explicitly: "Call me to discuss the next steps"
 
@@ -104,8 +104,8 @@ export SELF_HOST_PHONE=+1234567890  # Your phone number
 # ... other env vars ...
 
 # 2. Point the plugin to your server
-export HEY_BOSS_URL=https://your-server.com
-export HEY_BOSS_API_KEY=self-host
+export CALLME_URL=https://your-server.com
+export CALLME_API_KEY=self-host
 ```
 
 See [server/README.md](server/README.md) for full deployment instructions.

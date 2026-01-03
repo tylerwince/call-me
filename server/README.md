@@ -1,6 +1,6 @@
-# Hey Boss Server
+# CallMe Server
 
-The backend server for Hey Boss. Supports two modes:
+The backend server for CallMe. Supports two modes:
 
 1. **Self-host mode**: Single user, no payments or database needed
 2. **SaaS mode**: Multi-user with Stripe subscriptions and web registration
@@ -68,7 +68,7 @@ OPENAI_API_KEY=sk-xxxxx
 TTS_PROVIDER=chatterbox            # or 'openai'
 CHATTERBOX_URL=http://localhost:5100
 
-PUBLIC_URL=https://api.heyboss.io
+PUBLIC_URL=https://api.callme.dev
 
 # Stripe Subscription
 STRIPE_SECRET_KEY=sk_live_xxxxx
@@ -84,14 +84,14 @@ MONTHLY_MINUTES=60
 
 In Stripe Dashboard:
 1. Products → Create product
-2. Name: "Hey Boss Subscription"
+2. Name: "CallMe Subscription"
 3. Add a recurring price: $20/month
 4. Copy the Price ID (starts with `price_`)
 
 ### 4. Stripe Webhook
 
 In Stripe Dashboard → Webhooks:
-- URL: `https://api.heyboss.io/webhook`
+- URL: `https://api.callme.dev/webhook`
 - Events:
   - `checkout.session.completed` (for credit purchases)
   - `customer.subscription.created`
@@ -108,7 +108,7 @@ bun run start # Production
 
 ## User Flow
 
-1. User visits `https://api.heyboss.io`
+1. User visits `https://api.callme.dev`
 2. Signs up with email + phone number
 3. Gets API key on dashboard
 4. Subscribes via Stripe ($20/month)
@@ -119,7 +119,7 @@ bun run start # Production
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Hey Boss Server                                            │
+│  CallMe Server                                              │
 │                                                             │
 │  Web Pages          MCP Server         Phone Provider       │
 │  • /signup          • /mcp             • /twiml             │
@@ -237,7 +237,7 @@ Legacy Twilio vars also work: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_PATH` | `./heyboss.db` | SQLite database path |
+| `DATABASE_PATH` | `./callme.db` | SQLite database path |
 | `STRIPE_SECRET_KEY` | - | Stripe secret key |
 | `STRIPE_WEBHOOK_SECRET` | - | Stripe webhook secret |
 | `STRIPE_PRICE_ID` | - | Subscription price ID |
@@ -263,14 +263,14 @@ CMD ["bun", "run", "start"]
 
 ```ini
 [Unit]
-Description=Hey Boss
+Description=CallMe
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/hey-boss/server
+WorkingDirectory=/opt/callme/server
 ExecStart=/usr/bin/node dist/index.js
-EnvironmentFile=/opt/hey-boss/server/.env
+EnvironmentFile=/opt/callme/server/.env
 Restart=on-failure
 
 [Install]

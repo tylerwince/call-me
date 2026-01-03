@@ -55,7 +55,7 @@ function html(title: string, content: string, user?: User): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title} - Hey Boss</title>
+  <title>${title} - CallMe</title>
   <style>${STYLES}</style>
 </head>
 <body>
@@ -84,7 +84,7 @@ function homePage(): string {
   const { price, minutes } = getMinutesConfig();
 
   return html('Welcome', `
-    <h1>Hey Boss</h1>
+    <h1>CallMe</h1>
     <h2>Claude calls you when it needs your input</h2>
 
     <div class="card plan-box">
@@ -219,7 +219,7 @@ function dashboardPage(user: User, message?: string): string {
     <div class="card">
       <label>Your API Key</label>
       <div class="api-key">${user.api_key}</div>
-      <p class="price" style="margin-top: 12px;">Set as HEY_BOSS_API_KEY in your environment</p>
+      <p class="price" style="margin-top: 12px;">Set as CALLME_API_KEY in your environment</p>
     </div>
 
     <div class="card">

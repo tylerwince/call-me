@@ -144,7 +144,7 @@ export async function createCreditCheckout(
         currency: 'usd',
         product_data: {
           name: `${minutes} Credit Minutes`,
-          description: 'Additional call minutes for Hey Boss',
+          description: 'Additional call minutes for CallMe',
         },
         unit_amount: totalCents,
       },

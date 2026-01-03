@@ -139,7 +139,7 @@ export class CallManager {
     });
 
     this.httpServer.listen(this.config.port, () => {
-      console.error(`Hey Boss server listening on port ${this.config.port}`);
+      console.error(`CallMe server listening on port ${this.config.port}`);
       console.error(`MCP endpoint: ${this.config.publicUrl}/mcp`);
     });
   }

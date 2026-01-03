@@ -1,21 +1,21 @@
 {
-  "name": "hey-boss",
+  "name": "callme",
   "version": "2.0.0",
   "description": "Claude calls you on the phone when it needs your input or wants to report progress",
   "author": {
     "name": "ZeframLou",
     "url": "https://github.com/ZeframLou"
   },
-  "repository": "https://github.com/ZeframLou/hey-boss",
+  "repository": "https://github.com/ZeframLou/callme",
   "license": "MIT",
   "keywords": ["phone", "voice", "calls", "input"],
   "skills": "./skills",
   "mcpServers": {
-    "hey-boss": {
-      "url": "${HEY_BOSS_URL:-https://api.heyboss.io}/mcp",
+    "callme": {
+      "url": "${CALLME_URL:-https://api.callme.dev}/mcp",
       "transport": "http",
       "headers": {
-        "Authorization": "Bearer ${HEY_BOSS_API_KEY}"
+        "Authorization": "Bearer ${CALLME_API_KEY}"
       }
     }
   }

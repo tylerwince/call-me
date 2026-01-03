@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Hey Boss SaaS Server
+ * CallMe SaaS Server
  *
  * Modes:
  * - Self-host: Set SELF_HOST_PHONE, no Stripe/database needed
@@ -19,7 +19,7 @@ import { initStripe, isStripeEnabled } from './stripe.js';
 import { handleWebRequest } from './web.js';
 
 // Initialize components
-const dbPath = process.env.DATABASE_PATH || './heyboss.db';
+const dbPath = process.env.DATABASE_PATH || './callme.db';
 if (!process.env.SELF_HOST_PHONE) {
   initDatabase(dbPath);
 }
@@ -44,7 +44,7 @@ const callManager = new CallManager(serverConfig);
 
 // Create MCP server
 const mcpServer = new Server(
-  { name: 'hey-boss', version: '2.0.0' },
+  { name: 'callme', version: '2.0.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -109,7 +109,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
 mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (!currentUser) {
     return {
-      content: [{ type: 'text', text: 'Error: Not authenticated. Please check your HEY_BOSS_API_KEY.' }],
+      content: [{ type: 'text', text: 'Error: Not authenticated. Please check your CALLME_API_KEY.' }],
       isError: true,
     };
   }
@@ -121,7 +121,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{
           type: 'text',
-          text: 'Error: No active subscription. Please subscribe at heyboss.io',
+          text: 'Error: No active subscription. Please subscribe at callme.dev',
         }],
         isError: true,
       };
@@ -132,7 +132,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{
           type: 'text',
-          text: 'Error: No minutes available. Purchase additional credits at heyboss.io or wait for your next billing period.',
+          text: 'Error: No minutes available. Purchase additional credits at callme.dev or wait for your next billing period.',
         }],
         isError: true,
       };
@@ -279,7 +279,7 @@ function handleMcpRequest(req: IncomingMessage, res: ServerResponse): void {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Missing API key. Set HEY_BOSS_API_KEY.' }));
+    res.end(JSON.stringify({ error: 'Missing API key. Set CALLME_API_KEY.' }));
     return;
   }
 
@@ -351,7 +351,7 @@ process.on('SIGTERM', () => {
 });
 
 console.error('');
-console.error('Hey Boss server ready');
+console.error('CallMe server ready');
 console.error(`Mode: ${isSelfHostMode() ? 'Self-host' : 'SaaS'}`);
 console.error(`Stripe: ${isStripeEnabled() ? 'Enabled' : 'Disabled'}`);
 console.error('');
