@@ -1,170 +1,170 @@
 # Hey Boss Server
 
-This is the SaaS server that powers Hey Boss. Run this on your infrastructure to provide phone call services to users.
+The backend server for Hey Boss. Supports two modes:
 
-## Architecture
+1. **Self-host mode**: Single user, no payments or database needed
+2. **SaaS mode**: Multi-user with Stripe payments and web registration
 
-```
-Users (Claude Code)                    Your Server
-┌─────────────────┐                   ┌──────────────────────────┐
-│ Claude Code     │                   │  Hey Boss Server         │
-│    │            │    HTTPS          │                          │
-│    ▼            │ ───────────────►  │  Auth (API Key)          │
-│ Hey Boss Plugin │                   │           │              │
-│                 │                   │           ▼              │
-└─────────────────┘                   │  MCP Server + Billing    │
-                                      │           │              │
-                                      │     ┌─────┴─────┐        │
-                                      │     ▼           ▼        │
-                                      │  Twilio      OpenAI      │
-                                      │ (your keys) (your keys)  │
-                                      └──────────────────────────┘
-```
+## Quick Start (Self-Host)
 
-## Setup
-
-### 1. Install Dependencies
+For personal use, just set `SELF_HOST_PHONE`:
 
 ```bash
 cd server
 bun install
-bun run build
+
+export TWILIO_ACCOUNT_SID=ACxxxxx
+export TWILIO_AUTH_TOKEN=xxxxx
+export TWILIO_PHONE_NUMBER=+1234567890
+export OPENAI_API_KEY=sk-xxxxx
+export PUBLIC_URL=https://your-server.com
+export SELF_HOST_PHONE=+1234567890  # Your phone
+
+bun run dev
 ```
 
-### 2. Configure Environment
+No Stripe, no database, no user management needed.
+
+## SaaS Mode
+
+For running a paid service with multiple users:
+
+### 1. Setup
 
 ```bash
+cd server
+bun install
 cp .env.example .env
 ```
+
+### 2. Configure
 
 Edit `.env`:
 
 ```bash
-# Your Twilio credentials
+# Required
 TWILIO_ACCOUNT_SID=ACxxxxx
-TWILIO_AUTH_TOKEN=your_token
+TWILIO_AUTH_TOKEN=xxxxx
 TWILIO_PHONE_NUMBER=+1234567890
-
-# Your OpenAI key
 OPENAI_API_KEY=sk-xxxxx
-
-# Public URL where this server is hosted
 PUBLIC_URL=https://api.heyboss.io
-PORT=3000
 
-# Pricing (in cents per minute)
-TWILIO_COST_PER_MIN=2
-WHISPER_COST_PER_MIN=1
-TTS_COST_PER_MIN=5
-PRICE_MULTIPLIER=2.0  # 2x = 100% markup
+# Stripe
+STRIPE_SECRET_KEY=sk_live_xxxxx
+STRIPE_WEBHOOK_SECRET=whsec_xxxxx
 
-# User API keys (format: API_KEY_<key>=<phone_number>)
-API_KEY_sk_user1_abc123=+15551234567
-API_KEY_sk_user2_def456=+15559876543
+# Pricing (16¢/min with 2x markup)
+PRICE_MULTIPLIER=2.0
 ```
 
-### 3. Run the Server
+### 3. Stripe Webhook
+
+In Stripe Dashboard → Webhooks:
+- URL: `https://api.heyboss.io/webhook`
+- Events: `checkout.session.completed`
+
+### 4. Run
 
 ```bash
-# Development
-bun run dev
-
-# Production
-bun run start
+bun run dev   # Development
+bun run start # Production
 ```
 
-## Pricing Configuration
+## User Flow
 
-The server charges users based on this formula:
+1. User visits `https://api.heyboss.io`
+2. Signs up with email + phone number
+3. Gets API key on dashboard
+4. Adds credits via Stripe ($5, $10, $25, $50)
+5. Uses API key with plugin
+
+## Architecture
 
 ```
-Price per minute = (Twilio + Whisper + TTS costs) × PRICE_MULTIPLIER
+┌─────────────────────────────────────────────────────────────┐
+│  Hey Boss Server                                            │
+│                                                             │
+│  Web Pages          MCP Server         Twilio               │
+│  • /signup          • /mcp             • /twiml             │
+│  • /dashboard       • Auth             • /media-stream      │
+│  • /login           • Tools                                 │
+│                          │                                  │
+│                          ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ SQLite (users, usage) + Stripe (payments)           │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-With default settings:
-- Base cost: 2 + 1 + 5 = 8¢/min
-- Multiplier: 2.0×
-- **User price: 16¢/min**
-
-Adjust `PRICE_MULTIPLIER` to change your margin:
-- `1.5` = 50% markup (12¢/min)
-- `2.0` = 100% markup (16¢/min)
-- `3.0` = 200% markup (24¢/min)
-
-## Managing Users
-
-Add users by setting environment variables:
+## Pricing
 
 ```bash
-# Format: API_KEY_<api_key>=<phone_number>
-API_KEY_sk_john_abc123=+15551234567
-API_KEY_sk_jane_def456=+15559876543
+# Your costs
+TWILIO_COST_PER_MIN=2   # 2¢
+WHISPER_COST_PER_MIN=1  # 1¢
+TTS_COST_PER_MIN=5      # 5¢
+
+# Your markup
+PRICE_MULTIPLIER=2.0    # 2x
 ```
 
-For production, you'd want to:
-1. Store users in a database
-2. Build a signup flow at heyboss.io
-3. Implement proper billing with Stripe
-4. Add usage dashboards
+**Result:** Base 8¢ × 2.0 = **16¢/min** to users
+
+## Endpoints
+
+| Endpoint | Auth | Description |
+|----------|------|-------------|
+| `GET /` | No | Home page |
+| `GET /signup` | No | Registration |
+| `GET /dashboard` | Session | User dashboard |
+| `POST /mcp` | API Key | MCP protocol |
+| `POST /webhook` | Stripe | Payment webhook |
+| `GET /health` | No | Health check |
+
+## Environment Variables
+
+| Variable | Mode | Description |
+|----------|------|-------------|
+| `TWILIO_*` | Both | Twilio credentials |
+| `OPENAI_API_KEY` | Both | OpenAI key |
+| `PUBLIC_URL` | Both | Server URL |
+| `SELF_HOST_PHONE` | Self-host | Your phone (enables self-host) |
+| `SELF_HOST_API_KEY` | Self-host | Optional custom API key |
+| `DATABASE_PATH` | SaaS | SQLite path |
+| `STRIPE_SECRET_KEY` | SaaS | Stripe key |
+| `STRIPE_WEBHOOK_SECRET` | SaaS | Webhook secret |
+| `PRICE_MULTIPLIER` | Both | Pricing markup |
 
 ## Deployment
 
-### With Docker
+### Docker
 
 ```dockerfile
 FROM oven/bun:1
 WORKDIR /app
-COPY server/package.json server/bun.lock ./
+COPY package.json bun.lock ./
 RUN bun install --production
-COPY server/dist ./dist
+COPY dist ./dist
+EXPOSE 3000
 CMD ["bun", "run", "start"]
 ```
 
-### With systemd
+### systemd
 
 ```ini
 [Unit]
-Description=Hey Boss Server
+Description=Hey Boss
 After=network.target
 
 [Service]
 Type=simple
-User=heyboss
 WorkingDirectory=/opt/hey-boss/server
 ExecStart=/usr/bin/node dist/index.js
-Restart=on-failure
 EnvironmentFile=/opt/hey-boss/server/.env
+Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
-```
-
-### Requirements
-
-- Node.js 18+ or Bun
-- Public HTTPS URL (for Twilio webhooks)
-- Twilio account with voice-enabled phone number
-- OpenAI API key
-
-## API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /mcp` | MCP protocol endpoint (requires Bearer token) |
-| `GET /health` | Health check |
-| `POST /twiml` | Twilio webhook (internal) |
-| `WS /media-stream` | Twilio media stream (internal) |
-
-## Monitoring
-
-The server logs:
-- Call initiation and completion
-- Duration and cost per call
-- User usage totals
-
-Example output:
-```
-Call call-1-1704312345 ended: 120s, charged 32¢ to user john
 ```
 
 ## License

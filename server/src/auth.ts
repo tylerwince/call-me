@@ -1,51 +1,57 @@
 /**
- * API Key Authentication and User Management
+ * Authentication
  *
- * In production, this would connect to a database.
- * For now, we use a simple in-memory store and environment-based keys.
+ * Supports two modes:
+ * 1. Self-host mode: Single user, no database needed
+ * 2. SaaS mode: Multiple users with database
  */
 
-export interface User {
-  id: string;
-  apiKey: string;
-  phoneNumber: string;
-  createdAt: Date;
-  enabled: boolean;
+import { getUserByApiKey as dbGetUserByApiKey, User } from './database.js';
+
+let selfHostMode = false;
+let selfHostUser: User | null = null;
+
+export function initAuth(): void {
+  // Check if running in self-host mode
+  const selfHostPhone = process.env.SELF_HOST_PHONE;
+  const selfHostKey = process.env.SELF_HOST_API_KEY || 'self-host';
+
+  if (selfHostPhone) {
+    selfHostMode = true;
+    selfHostUser = {
+      id: 'self-host',
+      email: 'self-host@localhost',
+      phone_number: selfHostPhone,
+      api_key: selfHostKey,
+      stripe_customer_id: null,
+      balance_cents: 999999999, // Unlimited
+      created_at: new Date().toISOString(),
+      enabled: true,
+    };
+    console.error(`Self-host mode: calls will go to ${selfHostPhone}`);
+    console.error(`API key: ${selfHostKey}`);
+  } else {
+    console.error('SaaS mode: users managed via database');
+  }
 }
 
-// In production, this would be a database
-const users = new Map<string, User>();
-
-// Load API keys from environment (format: API_KEY_xxx=phone_number)
-export function loadApiKeys(): void {
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('API_KEY_')) {
-      const apiKey = key.replace('API_KEY_', '');
-      users.set(apiKey, {
-        id: apiKey.substring(0, 8),
-        apiKey,
-        phoneNumber: value!,
-        createdAt: new Date(),
-        enabled: true,
-      });
-      console.error(`Loaded API key: ${apiKey.substring(0, 8)}...`);
-    }
-  }
-  console.error(`Total API keys loaded: ${users.size}`);
+export function isSelfHostMode(): boolean {
+  return selfHostMode;
 }
 
 export function validateApiKey(apiKey: string): User | null {
-  const user = users.get(apiKey);
-  if (!user || !user.enabled) {
+  if (selfHostMode && selfHostUser) {
+    // In self-host mode, accept any key or the configured key
+    if (apiKey === selfHostUser.api_key || apiKey === 'self-host') {
+      return selfHostUser;
+    }
     return null;
   }
-  return user;
+
+  // SaaS mode: look up in database
+  return dbGetUserByApiKey(apiKey);
 }
 
-export function getUserByApiKey(apiKey: string): User | null {
-  return users.get(apiKey) || null;
-}
-
-export function getAllUsers(): User[] {
-  return Array.from(users.values());
+export function getSelfHostUser(): User | null {
+  return selfHostUser;
 }

@@ -1,18 +1,42 @@
 #!/usr/bin/env node
 
+/**
+ * Hey Boss SaaS Server
+ *
+ * Modes:
+ * - Self-host: Set SELF_HOST_PHONE, no Stripe/database needed
+ * - SaaS: Full multi-user with Stripe payments
+ */
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { CallManager, loadServerConfig } from './phone-call.js';
-import { loadApiKeys, validateApiKey, getUserByApiKey } from './auth.js';
-import { loadPricingConfig, getPricePerMin, getUserUsage } from './billing.js';
+import { initDatabase, getUserUsage, recordUsage } from './database.js';
+import { initAuth, validateApiKey, isSelfHostMode } from './auth.js';
+import { loadPricingConfig, getPricePerMin, calculateCallCost } from './billing.js';
+import { initStripe, isStripeEnabled } from './stripe.js';
+import { handleWebRequest } from './web.js';
 
-// Load configuration
-loadApiKeys();
+// Initialize components
+const dbPath = process.env.DATABASE_PATH || './heyboss.db';
+if (!process.env.SELF_HOST_PHONE) {
+  initDatabase(dbPath);
+}
+
+initAuth();
 loadPricingConfig();
-const serverConfig = loadServerConfig();
 
-// Initialize call manager
+// Initialize Stripe if configured
+if (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET) {
+  initStripe({
+    secretKey: process.env.STRIPE_SECRET_KEY,
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+    pricePerDollar: parseInt(process.env.CREDITS_PER_DOLLAR || '100', 10),
+  });
+}
+
+const serverConfig = loadServerConfig();
 const callManager = new CallManager(serverConfig);
 
 // Create MCP server
@@ -22,15 +46,17 @@ const mcpServer = new Server(
 );
 
 // Track authenticated user for current request
-let currentUser: { id: string; phoneNumber: string } | null = null;
+let currentUser: { id: string; phoneNumber: string; balanceCents: number } | null = null;
 
 // List available tools
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
+  const priceInfo = isSelfHostMode() ? '' : ` Costs ${getPricePerMin()}¢/min.`;
+
   return {
     tools: [
       {
         name: 'initiate_call',
-        description: `Start a phone call with the user. Costs ${getPricePerMin()}¢/min. Use when you need voice input, want to report completed work, or need real-time discussion.`,
+        description: `Start a phone call with the user.${priceInfo} Use when you need voice input, want to report completed work, or need real-time discussion.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -79,6 +105,17 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
+  // Check balance (skip in self-host mode)
+  if (!isSelfHostMode() && currentUser.balanceCents < getPricePerMin()) {
+    return {
+      content: [{
+        type: 'text',
+        text: 'Error: Insufficient balance. Please add credits at heyboss.io',
+      }],
+      isError: true,
+    };
+  }
+
   try {
     if (request.params.name === 'initiate_call') {
       const { message } = request.params.arguments as { message: string };
@@ -105,12 +142,22 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { call_id, message } = request.params.arguments as { call_id: string; message: string };
       const { durationSeconds } = await callManager.endCall(call_id, message);
 
-      const usage = getUserUsage(currentUser.id);
+      // Record usage (skip in self-host mode)
+      if (!isSelfHostMode()) {
+        const cost = calculateCallCost(durationSeconds);
+        recordUsage(currentUser.id, call_id, durationSeconds, cost);
+
+        const usage = getUserUsage(currentUser.id);
+        return {
+          content: [{
+            type: 'text',
+            text: `Call ended. Duration: ${durationSeconds}s, Cost: ${cost}¢\n\nTotal usage: ${usage.totalCalls} calls, $${(usage.totalCostCents / 100).toFixed(2)}`,
+          }],
+        };
+      }
+
       return {
-        content: [{
-          type: 'text',
-          text: `Call ended. Duration: ${durationSeconds}s\n\nYour usage: ${usage.totalCalls} calls, ${usage.totalMinutes} minutes, $${(usage.totalCostCents / 100).toFixed(2)} total`,
-        }],
+        content: [{ type: 'text', text: `Call ended. Duration: ${durationSeconds}s` }],
       };
     }
 
@@ -124,9 +171,51 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// HTTP handler for MCP requests
+// HTTP handler
+async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+
+  // Health check
+  if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      mode: isSelfHostMode() ? 'self-host' : 'saas',
+      stripe: isStripeEnabled(),
+    }));
+    return;
+  }
+
+  // MCP endpoint
+  if (url.pathname === '/mcp') {
+    handleMcpRequest(req, res);
+    return;
+  }
+
+  // Twilio TwiML
+  if (url.pathname === '/twiml') {
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://${new URL(serverConfig.publicUrl).host}/media-stream" />
+  </Connect>
+</Response>`;
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    res.end(twiml);
+    return;
+  }
+
+  // Web pages (signup, dashboard, etc.) - skip in self-host mode
+  if (!isSelfHostMode()) {
+    const handled = await handleWebRequest(req, res);
+    if (handled) return;
+  }
+
+  res.writeHead(404);
+  res.end('Not Found');
+}
+
 function handleMcpRequest(req: IncomingMessage, res: ServerResponse): void {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -159,17 +248,18 @@ function handleMcpRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  // Set current user for this request
-  currentUser = { id: user.id, phoneNumber: user.phoneNumber };
+  currentUser = {
+    id: user.id,
+    phoneNumber: user.phone_number,
+    balanceCents: user.balance_cents,
+  };
 
-  // Read request body
   let body = '';
   req.on('data', (chunk) => { body += chunk; });
   req.on('end', async () => {
     try {
       const message = JSON.parse(body);
 
-      // Route to MCP server
       if (message.method === 'tools/list') {
         const result = await mcpServer.requestHandlers.get(ListToolsRequestSchema.shape.method.value)?.(
           { method: message.method, params: message.params || {} },
@@ -189,7 +279,7 @@ function handleMcpRequest(req: IncomingMessage, res: ServerResponse): void {
         res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }));
       }
     } catch (error) {
-      console.error('MCP request error:', error);
+      console.error('MCP error:', error);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
     } finally {
@@ -198,8 +288,8 @@ function handleMcpRequest(req: IncomingMessage, res: ServerResponse): void {
   });
 }
 
-// Set up MCP handler and start server
-callManager.setMcpHandler(handleMcpRequest);
+// Start server
+callManager.setMcpHandler(handleRequest);
 callManager.startServer();
 
 // Graceful shutdown
@@ -215,5 +305,9 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-console.error('Hey Boss SaaS server ready');
+console.error('');
+console.error('Hey Boss server ready');
+console.error(`Mode: ${isSelfHostMode() ? 'Self-host' : 'SaaS'}`);
+console.error(`Stripe: ${isStripeEnabled() ? 'Enabled' : 'Disabled'}`);
 console.error(`Price: ${getPricePerMin()}¢/minute`);
+console.error('');
