@@ -7,9 +7,11 @@ import {
   validateProviderConfig,
   type ProviderRegistry,
 } from './providers/index.js';
+import { TelnyxPhoneProvider } from './providers/phone-telnyx.js';
 
 interface CallState {
   callId: string;
+  callControlId: string | null; // For Telnyx API v2
   userId: string;
   userPhoneNumber: string;
   ws: WebSocket | null;
@@ -51,6 +53,7 @@ export function loadServerConfig(): ServerConfig {
 
 export class CallManager {
   private activeCalls = new Map<string, CallState>();
+  private callControlIdToCallId = new Map<string, string>(); // For Telnyx API v2
   private httpServer: ReturnType<typeof createServer> | null = null;
   private wss: WebSocket.Server | null = null;
   private config: ServerConfig;
@@ -75,12 +78,9 @@ export class CallManager {
         return;
       }
 
-      // TwiML/TeXML endpoint for phone providers
+      // Webhook endpoint for phone providers (TwiML for Twilio, JSON for Telnyx v2)
       if (url.pathname === '/twiml') {
-        const streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
-        const xml = this.config.providers.phone.getStreamConnectXml(streamUrl);
-        res.writeHead(200, { 'Content-Type': 'application/xml' });
-        res.end(xml);
+        this.handlePhoneWebhook(req, res);
         return;
       }
 
@@ -148,11 +148,104 @@ export class CallManager {
     return this.httpServer;
   }
 
+  /**
+   * Handle webhook from phone provider (Twilio XML or Telnyx JSON)
+   */
+  private handlePhoneWebhook(req: IncomingMessage, res: ServerResponse): void {
+    const contentType = req.headers['content-type'] || '';
+
+    // Telnyx API v2 sends JSON webhooks
+    if (contentType.includes('application/json')) {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const event = JSON.parse(body);
+          await this.handleTelnyxWebhook(event, res);
+        } catch (error) {
+          console.error('Error parsing Telnyx webhook:', error);
+          res.writeHead(400);
+          res.end('Invalid JSON');
+        }
+      });
+      return;
+    }
+
+    // Twilio sends form-encoded data, expects TwiML response
+    const streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
+    const xml = this.config.providers.phone.getStreamConnectXml(streamUrl);
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    res.end(xml);
+  }
+
+  /**
+   * Handle Telnyx Call Control API v2 webhook events
+   */
+  private async handleTelnyxWebhook(event: any, res: ServerResponse): Promise<void> {
+    const eventType = event.data?.event_type;
+    const callControlId = event.data?.payload?.call_control_id;
+
+    console.error(`Telnyx webhook: ${eventType} (callControlId: ${callControlId})`);
+
+    // Always respond 200 OK immediately for Telnyx webhooks
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok' }));
+
+    if (!callControlId) return;
+
+    const provider = this.config.providers.phone;
+    if (!(provider instanceof TelnyxPhoneProvider)) return;
+
+    try {
+      switch (eventType) {
+        case 'call.initiated':
+          // Call is being placed, nothing to do yet
+          break;
+
+        case 'call.answered':
+          // Call was answered - start media streaming
+          const streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
+          await provider.startStreaming(callControlId, streamUrl);
+          console.error(`Started streaming for call ${callControlId}`);
+          break;
+
+        case 'call.hangup':
+          // Call ended - clean up
+          const callId = this.callControlIdToCallId.get(callControlId);
+          if (callId) {
+            this.callControlIdToCallId.delete(callControlId);
+            const state = this.activeCalls.get(callId);
+            if (state?.ws) {
+              state.ws.close();
+            }
+          }
+          break;
+
+        case 'streaming.started':
+          // Media streaming is now active
+          console.error(`Streaming started for call ${callControlId}`);
+          break;
+
+        case 'streaming.stopped':
+          // Media streaming stopped
+          console.error(`Streaming stopped for call ${callControlId}`);
+          break;
+
+        default:
+          // Log other events for debugging
+          console.error(`Unhandled Telnyx event: ${eventType}`);
+      }
+    } catch (error) {
+      console.error(`Error handling Telnyx webhook ${eventType}:`, error);
+    }
+  }
+
   async initiateCall(userId: string, userPhoneNumber: string, message: string): Promise<{ callId: string; response: string }> {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
 
     const state: CallState = {
       callId,
+      callControlId: null,
       userId,
       userPhoneNumber,
       ws: null,
@@ -164,13 +257,17 @@ export class CallManager {
     startCallTracking(callId, userId);
 
     try {
-      const callSid = await this.config.providers.phone.initiateCall(
+      const callControlId = await this.config.providers.phone.initiateCall(
         userPhoneNumber,
         this.config.phoneNumber,
         `${this.config.publicUrl}/twiml`
       );
 
-      console.error(`Call initiated: ${callSid} -> ${userPhoneNumber} (callId: ${callId})`);
+      // Store callControlId for Telnyx API v2
+      state.callControlId = callControlId;
+      this.callControlIdToCallId.set(callControlId, callId);
+
+      console.error(`Call initiated: ${callControlId} -> ${userPhoneNumber} (callId: ${callId})`);
 
       const ws = await this.waitForConnection(callId, 15000);
       state.ws = ws;

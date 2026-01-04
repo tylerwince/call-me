@@ -1,8 +1,8 @@
 /**
- * Telnyx Phone Provider
+ * Telnyx Phone Provider (API v2)
  *
  * Cost-effective alternative to Twilio (30-70% cheaper).
- * Uses TeXML which is TwiML-compatible.
+ * Uses Call Control API v2 with JSON webhooks.
  *
  * Pricing (as of 2025):
  * - Outbound: $0.007/min (vs Twilio $0.014/min)
@@ -29,7 +29,7 @@ export class TelnyxPhoneProvider implements PhoneProvider {
     // Telnyx uses API key (passed as authToken) and Connection ID (passed as accountSid)
     this.apiKey = config.authToken;
     this.connectionId = config.accountSid;
-    console.error(`Phone provider: Telnyx`);
+    console.error(`Phone provider: Telnyx (API v2)`);
   }
 
   async initiateCall(to: string, from: string, webhookUrl: string): Promise<string> {
@@ -63,13 +63,92 @@ export class TelnyxPhoneProvider implements PhoneProvider {
     return data.data.call_control_id;
   }
 
+  /**
+   * Start media streaming using Call Control API v2
+   */
+  async startStreaming(callControlId: string, streamUrl: string): Promise<void> {
+    if (!this.apiKey) {
+      throw new Error('Telnyx not initialized');
+    }
+
+    const response = await fetch(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          stream_url: streamUrl,
+          stream_track: 'both_tracks',
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Telnyx streaming_start failed: ${response.status} ${error}`);
+    }
+  }
+
+  /**
+   * Answer an incoming call using Call Control API v2
+   */
+  async answerCall(callControlId: string): Promise<void> {
+    if (!this.apiKey) {
+      throw new Error('Telnyx not initialized');
+    }
+
+    const response = await fetch(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Telnyx answer failed: ${response.status} ${error}`);
+    }
+  }
+
+  /**
+   * Hang up a call using Call Control API v2
+   */
+  async hangup(callControlId: string): Promise<void> {
+    if (!this.apiKey) {
+      throw new Error('Telnyx not initialized');
+    }
+
+    const response = await fetch(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      console.error(`Telnyx hangup failed: ${response.status} ${error}`);
+    }
+  }
+
+  // Legacy method for Twilio compatibility - not used with API v2
   getStreamConnectXml(streamUrl: string): string {
-    // TeXML is TwiML-compatible
-    return `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${streamUrl}" />
-  </Connect>
-</Response>`;
+    // For API v2, we use startStreaming() instead
+    // This is kept for interface compatibility but shouldn't be called
+    console.error('Warning: getStreamConnectXml called on Telnyx v2 provider');
+    return '';
   }
 }
