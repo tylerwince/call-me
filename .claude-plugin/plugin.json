@@ -1,21 +1,30 @@
 {
   "name": "callme",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Claude calls you on the phone when it needs your input or wants to report progress",
   "author": {
     "name": "ZeframLou",
     "url": "https://github.com/ZeframLou"
   },
-  "repository": "https://github.com/ZeframLou/callme",
+  "repository": "https://github.com/ZeframLou/call-me",
   "license": "MIT",
   "keywords": ["phone", "voice", "calls", "input"],
   "skills": "./skills",
   "mcpServers": {
     "callme": {
-      "url": "${CALLME_URL:-https://api.callme.dev}/mcp",
-      "transport": "http",
-      "headers": {
-        "Authorization": "Bearer ${CALLME_API_KEY}"
+      "command": "bun",
+      "args": ["run", "${CLAUDE_PLUGIN_ROOT}/server/src/index.ts"],
+      "env": {
+        "CALLME_PHONE_PROVIDER": "${CALLME_PHONE_PROVIDER:-telnyx}",
+        "CALLME_PHONE_ACCOUNT_SID": "${CALLME_PHONE_ACCOUNT_SID}",
+        "CALLME_PHONE_AUTH_TOKEN": "${CALLME_PHONE_AUTH_TOKEN}",
+        "CALLME_PHONE_NUMBER": "${CALLME_PHONE_NUMBER}",
+        "CALLME_USER_PHONE_NUMBER": "${CALLME_USER_PHONE_NUMBER}",
+        "CALLME_OPENAI_API_KEY": "${CALLME_OPENAI_API_KEY}",
+        "CALLME_TTS_PROVIDER": "${CALLME_TTS_PROVIDER:-openai}",
+        "CALLME_TTS_VOICE": "${CALLME_TTS_VOICE:-onyx}",
+        "CALLME_NGROK_AUTHTOKEN": "${CALLME_NGROK_AUTHTOKEN}",
+        "CALLME_PORT": "${CALLME_PORT:-3333}"
       }
     }
   }

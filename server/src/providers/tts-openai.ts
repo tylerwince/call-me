@@ -42,4 +42,39 @@ export class OpenAITTSProvider implements TTSProvider {
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
   }
+
+  /**
+   * Stream TTS audio as chunks arrive from OpenAI
+   * Yields Buffer chunks of PCM audio data
+   */
+  async *synthesizeStream(text: string): AsyncGenerator<Buffer> {
+    if (!this.client) throw new Error('OpenAI TTS not initialized');
+
+    const response = await this.client.audio.speech.create({
+      model: this.model,
+      voice: this.voice as 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer',
+      input: text,
+      response_format: 'pcm',
+      speed: 1.0,
+    });
+
+    // Get the response body as a readable stream
+    const body = response.body;
+    if (!body) {
+      throw new Error('No response body from OpenAI TTS');
+    }
+
+    const reader = body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          yield Buffer.from(value);
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
 }

@@ -2,47 +2,77 @@
 
 **Claude Code Plugin** - Claude calls you on the phone when it needs your input or wants to report progress.
 
-## Install
+## Quick Start
 
-```
-/plugin marketplace add ZeframLou/callme
-/plugin install callme@callme
-```
+### 1. Get Required Accounts
 
-Set your API key:
+You'll need:
+- **Phone provider**: [Telnyx](https://telnyx.com) (recommended, ~$0.007/min) or [Twilio](https://twilio.com) (~$0.014/min)
+- **OpenAI API key**: For speech-to-text and text-to-speech
+- **ngrok account**: Free at [ngrok.com](https://ngrok.com) (for webhook tunneling)
+
+### 2. Set Up Phone Provider
+
+**Telnyx (recommended):**
+1. Create account at [portal.telnyx.com](https://portal.telnyx.com)
+2. Buy a phone number (~$1/month)
+3. Create a "Call Control" application
+4. Note your Connection ID and API Key
+
+**Twilio:**
+1. Create account at [console.twilio.com](https://console.twilio.com)
+2. Buy a phone number (~$1/month)
+3. Note your Account SID and Auth Token
+
+### 3. Set Environment Variables
 
 ```bash
-export CALLME_API_KEY=sk_your_api_key_here
+# Phone provider
+export CALLME_PHONE_PROVIDER=telnyx
+export CALLME_PHONE_ACCOUNT_SID=your_connection_id
+export CALLME_PHONE_AUTH_TOKEN=your_api_key
+export CALLME_PHONE_NUMBER=+1234567890  # Your Telnyx/Twilio number
+
+# Your phone number (where to call you)
+export CALLME_USER_PHONE_NUMBER=+1234567890
+
+# Speech services
+export CALLME_OPENAI_API_KEY=sk-xxx
+
+# ngrok (get free token at ngrok.com)
+export CALLME_NGROK_AUTHTOKEN=xxx
+```
+
+### 4. Install Plugin
+
+```bash
+/plugin marketplace add ZeframLou/call-me
+/plugin install callme@callme
 ```
 
 Restart Claude Code. Done!
 
-## Get an API Key
-
-Sign up at [callme.dev](https://callme.dev) to get your API key. You'll provide your phone number during signup - that's where Claude will call you.
-
-## Pricing
-
-**$20/month** - includes 60 minutes of call time.
-
-Need more? Purchase additional credits at **$0.50/minute**. Credits are used after your subscription minutes run out and never expire.
-
 ## How It Works
 
 ```
-Claude Code                         CallMe Cloud
+Claude Code                    CallMe MCP Server (local)
     │                                    │
     │  "I finished the feature..."       │
     ▼                                    ▼
-Plugin ──────────────────────────► API Server
-  (your API key)                         │
+Plugin ────stdio──────────────────► MCP Server
+                                         │
+                                         ├─► ngrok tunnel
+                                         │
+                                         ▼
+                                   Phone Provider (Telnyx/Twilio)
+                                         │
                                          ▼
                                    Your Phone rings
                                    You speak
                                    Text returns to Claude
 ```
 
-Claude controls the conversation. The service just handles the phone call infrastructure.
+The MCP server runs locally on your machine and automatically starts an ngrok tunnel for phone provider webhooks.
 
 ## Tools
 
@@ -83,32 +113,56 @@ await end_call({
 
 Claude won't call for simple yes/no questions.
 
+## Costs
+
+Running your own CallMe server costs:
+- **Phone calls**: ~$0.007/min (Telnyx) or ~$0.014/min (Twilio)
+- **Speech-to-text**: ~$0.006/min (OpenAI Whisper)
+- **Text-to-speech**: ~$0.02/min (OpenAI TTS)
+- **Phone number**: ~$1/month
+
+**Total**: ~$0.03-0.04/minute of conversation
+
+## Configuration
+
+All configuration is via environment variables. See [.env.example](.env.example) for the full list.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `CALLME_PHONE_PROVIDER` | No | `telnyx` | `telnyx` or `twilio` |
+| `CALLME_PHONE_ACCOUNT_SID` | Yes | - | Provider account/connection ID |
+| `CALLME_PHONE_AUTH_TOKEN` | Yes | - | Provider auth token |
+| `CALLME_PHONE_NUMBER` | Yes | - | Outbound caller ID |
+| `CALLME_USER_PHONE_NUMBER` | Yes | - | Your personal phone |
+| `CALLME_OPENAI_API_KEY` | Yes | - | For STT and TTS |
+| `CALLME_TTS_PROVIDER` | No | `openai` | `openai` or `chatterbox` |
+| `CALLME_NGROK_AUTHTOKEN` | Yes | - | ngrok auth token |
+| `CALLME_PORT` | No | `3333` | Local HTTP port |
+
 ## Troubleshooting
 
 ### Claude doesn't use the tool
-1. Check `CALLME_API_KEY` is set in your environment
+1. Check all required environment variables are set
 2. Restart Claude Code after installing the plugin
 3. Try explicitly: "Call me to discuss the next steps"
 
 ### Call doesn't connect
-1. Verify your phone number is correct in your account
-2. Check your account has credits
+1. Check the MCP server logs (stderr) for errors
+2. Verify your phone provider credentials are correct
+3. Make sure ngrok is able to create a tunnel
 
-## Self-Hosting
+### ngrok errors
+1. Verify your `CALLME_NGROK_AUTHTOKEN` is correct
+2. Check if you've hit ngrok's free tier limits
+3. Try a different port with `CALLME_PORT=3334`
 
-Run your own server for free (no payments, just your Twilio/OpenAI costs):
+## Development
 
 ```bash
-# 1. Deploy the server (see server/README.md)
-export SELF_HOST_PHONE=+1234567890  # Your phone number
-# ... other env vars ...
-
-# 2. Point the plugin to your server
-export CALLME_URL=https://your-server.com
-export CALLME_API_KEY=self-host
+cd server
+bun install
+bun run dev
 ```
-
-See [server/README.md](server/README.md) for full deployment instructions.
 
 ## License
 

@@ -4,11 +4,10 @@
  * Creates and configures providers based on environment variables.
  *
  * Environment variables:
- *   PHONE_PROVIDER: 'telnyx' | 'twilio' (default: 'telnyx')
- *   STT_PROVIDER: 'openai' (default: 'openai')
- *   STT_MODEL: 'whisper-1' | 'gpt-4o-mini-transcribe' (default: 'gpt-4o-mini-transcribe')
- *   TTS_PROVIDER: 'chatterbox' | 'openai' (default: 'chatterbox')
- *   CHATTERBOX_URL: URL for self-hosted Chatterbox (default: 'http://localhost:5100')
+ *   CALLME_PHONE_PROVIDER: 'telnyx' | 'twilio' (default: 'telnyx')
+ *   CALLME_STT_MODEL: 'whisper-1' | 'gpt-4o-mini-transcribe' (default: 'gpt-4o-mini-transcribe')
+ *   CALLME_TTS_PROVIDER: 'openai' | 'chatterbox' (default: 'openai')
+ *   CALLME_CHATTERBOX_URL: URL for self-hosted Chatterbox (default: 'http://localhost:5100')
  */
 
 import type { PhoneProvider, STTProvider, TTSProvider, ProviderRegistry } from './types.js';
@@ -33,20 +32,20 @@ export interface ProviderConfig {
   openaiApiKey: string;
 
   // TTS
-  ttsProvider: 'chatterbox' | 'openai';
+  ttsProvider: 'openai' | 'chatterbox';
   chatterboxUrl?: string;
   ttsVoice?: string;
 }
 
 export function loadProviderConfig(): ProviderConfig {
-  const phoneProvider = (process.env.PHONE_PROVIDER || 'telnyx') as 'telnyx' | 'twilio';
-  const ttsProvider = (process.env.TTS_PROVIDER || 'chatterbox') as 'chatterbox' | 'openai';
+  const phoneProvider = (process.env.CALLME_PHONE_PROVIDER || 'telnyx') as 'telnyx' | 'twilio';
+  const ttsProvider = (process.env.CALLME_TTS_PROVIDER || 'openai') as 'openai' | 'chatterbox';
 
-  // For Telnyx: PHONE_ACCOUNT_SID is Connection ID, PHONE_AUTH_TOKEN is API Key
+  // For Telnyx: CALLME_PHONE_ACCOUNT_SID is Connection ID, CALLME_PHONE_AUTH_TOKEN is API Key
   // For Twilio: standard Account SID and Auth Token
-  const phoneAccountSid = process.env.PHONE_ACCOUNT_SID || process.env.TWILIO_ACCOUNT_SID || '';
-  const phoneAuthToken = process.env.PHONE_AUTH_TOKEN || process.env.TWILIO_AUTH_TOKEN || '';
-  const phoneNumber = process.env.PHONE_NUMBER || process.env.TWILIO_PHONE_NUMBER || '';
+  const phoneAccountSid = process.env.CALLME_PHONE_ACCOUNT_SID || '';
+  const phoneAuthToken = process.env.CALLME_PHONE_AUTH_TOKEN || '';
+  const phoneNumber = process.env.CALLME_PHONE_NUMBER || '';
 
   return {
     phoneProvider,
@@ -55,12 +54,12 @@ export function loadProviderConfig(): ProviderConfig {
     phoneNumber,
 
     sttProvider: 'openai',
-    sttModel: process.env.STT_MODEL || 'gpt-4o-mini-transcribe',
-    openaiApiKey: process.env.OPENAI_API_KEY || '',
+    sttModel: process.env.CALLME_STT_MODEL || 'gpt-4o-mini-transcribe',
+    openaiApiKey: process.env.CALLME_OPENAI_API_KEY || '',
 
     ttsProvider,
-    chatterboxUrl: process.env.CHATTERBOX_URL || 'http://localhost:5100',
-    ttsVoice: process.env.TTS_VOICE || 'onyx',
+    chatterboxUrl: process.env.CALLME_CHATTERBOX_URL || 'http://localhost:5100',
+    ttsVoice: process.env.CALLME_TTS_VOICE || 'onyx',
   };
 }
 
@@ -137,23 +136,23 @@ export function validateProviderConfig(config: ProviderConfig): string[] {
 
   // Phone validation
   if (!config.phoneAccountSid) {
-    errors.push(`Missing PHONE_ACCOUNT_SID (or TWILIO_ACCOUNT_SID)`);
+    errors.push('Missing CALLME_PHONE_ACCOUNT_SID');
   }
   if (!config.phoneAuthToken) {
-    errors.push(`Missing PHONE_AUTH_TOKEN (or TWILIO_AUTH_TOKEN)`);
+    errors.push('Missing CALLME_PHONE_AUTH_TOKEN');
   }
   if (!config.phoneNumber) {
-    errors.push(`Missing PHONE_NUMBER (or TWILIO_PHONE_NUMBER)`);
+    errors.push('Missing CALLME_PHONE_NUMBER');
   }
 
   // STT validation
   if (!config.openaiApiKey) {
-    errors.push('Missing OPENAI_API_KEY (required for STT)');
+    errors.push('Missing CALLME_OPENAI_API_KEY (required for STT)');
   }
 
   // TTS validation
   if (config.ttsProvider === 'openai' && !config.openaiApiKey) {
-    errors.push('Missing OPENAI_API_KEY (required for OpenAI TTS)');
+    errors.push('Missing CALLME_OPENAI_API_KEY (required for OpenAI TTS)');
   }
   // Note: Chatterbox doesn't need API key, just needs server running
 

@@ -65,6 +65,7 @@ export class TelnyxPhoneProvider implements PhoneProvider {
 
   /**
    * Start media streaming using Call Control API v2
+   * Enables bidirectional streaming so we can send audio back to the caller
    */
   async startStreaming(callControlId: string, streamUrl: string): Promise<void> {
     if (!this.apiKey) {
@@ -82,6 +83,10 @@ export class TelnyxPhoneProvider implements PhoneProvider {
         body: JSON.stringify({
           stream_url: streamUrl,
           stream_track: 'both_tracks',
+          // Enable bidirectional streaming to send audio back to caller
+          stream_bidirectional_mode: 'rtp',
+          // Use PCMU (mu-law) codec at 8kHz - matches our audio encoding
+          stream_bidirectional_codec: 'PCMU',
         }),
       }
     );
@@ -141,6 +146,37 @@ export class TelnyxPhoneProvider implements PhoneProvider {
     if (!response.ok) {
       const error = await response.text();
       console.error(`Telnyx hangup failed: ${response.status} ${error}`);
+    }
+  }
+
+  /**
+   * Speak text on a call using Telnyx's built-in TTS
+   * This is more reliable than streaming audio via WebSocket
+   */
+  async speak(callControlId: string, text: string): Promise<void> {
+    if (!this.apiKey) {
+      throw new Error('Telnyx not initialized');
+    }
+
+    const response = await fetch(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          payload: text,
+          voice: 'male',
+          language: 'en-US',
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Telnyx speak failed: ${response.status} ${error}`);
     }
   }
 

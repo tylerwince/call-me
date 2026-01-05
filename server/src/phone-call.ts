@@ -1,6 +1,5 @@
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { startCallTracking, endCallTracking } from './billing.js';
 import {
   loadProviderConfig,
   createProviders,
@@ -11,91 +10,71 @@ import { TelnyxPhoneProvider } from './providers/phone-telnyx.js';
 
 interface CallState {
   callId: string;
-  callControlId: string | null; // For Telnyx API v2
-  userId: string;
+  callControlId: string | null;
   userPhoneNumber: string;
   ws: WebSocket | null;
   conversationHistory: Array<{ speaker: 'claude' | 'user'; message: string }>;
   startTime: number;
+  hungUp: boolean;
+  // Audio buffer - always collecting incoming audio
+  audioBuffer: Buffer[];
 }
 
 export interface ServerConfig {
   publicUrl: string;
   port: number;
   phoneNumber: string;
+  userPhoneNumber: string;
   providers: ProviderRegistry;
 }
 
-export function loadServerConfig(): ServerConfig {
-  // Load and validate provider configuration
+export function loadServerConfig(publicUrl: string): ServerConfig {
   const providerConfig = loadProviderConfig();
   const errors = validateProviderConfig(providerConfig);
 
-  // Check for PUBLIC_URL
-  if (!process.env.PUBLIC_URL) {
-    errors.push('Missing PUBLIC_URL');
+  if (!process.env.CALLME_USER_PHONE_NUMBER) {
+    errors.push('Missing CALLME_USER_PHONE_NUMBER (where to call you)');
   }
 
   if (errors.length > 0) {
     throw new Error(`Missing required configuration:\n  - ${errors.join('\n  - ')}`);
   }
 
-  // Create providers
   const providers = createProviders(providerConfig);
 
   return {
-    publicUrl: process.env.PUBLIC_URL!,
-    port: parseInt(process.env.PORT || '3333', 10),
+    publicUrl,
+    port: parseInt(process.env.CALLME_PORT || '3333', 10),
     phoneNumber: providerConfig.phoneNumber,
+    userPhoneNumber: process.env.CALLME_USER_PHONE_NUMBER!,
     providers,
   };
 }
 
 export class CallManager {
   private activeCalls = new Map<string, CallState>();
-  private callControlIdToCallId = new Map<string, string>(); // For Telnyx API v2
+  private callControlIdToCallId = new Map<string, string>();
   private httpServer: ReturnType<typeof createServer> | null = null;
   private wss: WebSocket.Server | null = null;
   private config: ServerConfig;
   private currentCallId = 0;
-  private mcpHandler: ((req: IncomingMessage, res: ServerResponse) => void) | null = null;
 
   constructor(config: ServerConfig) {
     this.config = config;
-  }
-
-  setMcpHandler(handler: (req: IncomingMessage, res: ServerResponse) => void): void {
-    this.mcpHandler = handler;
   }
 
   startServer(): void {
     this.httpServer = createServer((req, res) => {
       const url = new URL(req.url!, `http://${req.headers.host}`);
 
-      // MCP endpoint
-      if (url.pathname === '/mcp' && this.mcpHandler) {
-        this.mcpHandler(req, res);
-        return;
-      }
-
-      // Webhook endpoint for phone providers (TwiML for Twilio, JSON for Telnyx v2)
       if (url.pathname === '/twiml') {
         this.handlePhoneWebhook(req, res);
         return;
       }
 
-      // Health check
       if (url.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          status: 'ok',
-          activeCalls: this.activeCalls.size,
-          providers: {
-            phone: this.config.providers.phone.name,
-            stt: this.config.providers.stt.name,
-            tts: this.config.providers.tts.name,
-          },
-        }));
+        res.end(JSON.stringify({ status: 'ok', activeCalls: this.activeCalls.size }));
         return;
       }
 
@@ -103,7 +82,6 @@ export class CallManager {
       res.end('Not Found');
     });
 
-    // WebSocket server for media streams
     this.wss = new WebSocket.Server({ noServer: true });
 
     this.httpServer.on('upgrade', (request: IncomingMessage, socket: any, head: Buffer) => {
@@ -119,42 +97,74 @@ export class CallManager {
 
     this.wss.on('connection', (ws) => {
       console.error('Media stream WebSocket connected');
-      ws.on('message', (message: string) => {
-        try {
-          const msg = JSON.parse(message.toString());
-          if (msg.event === 'start') {
-            const streamSid = msg.start.streamSid;
-            for (const [callId, state] of this.activeCalls.entries()) {
-              if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
-                state.ws = ws;
-                console.error(`Associated stream ${streamSid} with call ${callId}`);
-                break;
-              }
+      let associatedCallId: string | null = null;
+
+      ws.on('message', (message: Buffer | string) => {
+        const msgBuffer = Buffer.isBuffer(message) ? message : Buffer.from(message);
+
+        // Try to associate with a call if not already
+        if (!associatedCallId) {
+          for (const [callId, state] of this.activeCalls.entries()) {
+            if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+              state.ws = ws;
+              associatedCallId = callId;
+              console.error(`Associated WebSocket with call ${callId}`);
+              break;
             }
           }
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
         }
+
+        // Extract and buffer audio
+        if (associatedCallId) {
+          const state = this.activeCalls.get(associatedCallId);
+          if (state) {
+            const audioData = this.extractAudio(msgBuffer);
+            if (audioData) {
+              state.audioBuffer.push(audioData);
+            }
+          }
+        }
+      });
+
+      ws.on('close', () => {
+        console.error('Media stream WebSocket closed');
       });
     });
 
     this.httpServer.listen(this.config.port, () => {
-      console.error(`CallMe server listening on port ${this.config.port}`);
-      console.error(`MCP endpoint: ${this.config.publicUrl}/mcp`);
+      console.error(`HTTP server listening on port ${this.config.port}`);
     });
   }
 
-  getHttpServer() {
-    return this.httpServer;
+  /**
+   * Extract INBOUND audio data from WebSocket message (filters out outbound/TTS audio)
+   */
+  private extractAudio(msgBuffer: Buffer): Buffer | null {
+    if (msgBuffer.length === 0) return null;
+
+    // Binary audio (doesn't start with '{') - can't determine track, skip
+    if (msgBuffer[0] !== 0x7b) {
+      return null;
+    }
+
+    // JSON format - only extract inbound track (user's voice)
+    try {
+      const msg = JSON.parse(msgBuffer.toString());
+      if (msg.event === 'media' && msg.media?.payload) {
+        // Only capture inbound audio (user's voice), not outbound (our TTS)
+        const track = msg.media?.track;
+        if (track === 'inbound' || track === 'inbound_track') {
+          return Buffer.from(msg.media.payload, 'base64');
+        }
+      }
+    } catch {}
+
+    return null;
   }
 
-  /**
-   * Handle webhook from phone provider (Twilio XML or Telnyx JSON)
-   */
   private handlePhoneWebhook(req: IncomingMessage, res: ServerResponse): void {
     const contentType = req.headers['content-type'] || '';
 
-    // Telnyx API v2 sends JSON webhooks
     if (contentType.includes('application/json')) {
       let body = '';
       req.on('data', (chunk) => { body += chunk; });
@@ -171,23 +181,20 @@ export class CallManager {
       return;
     }
 
-    // Twilio sends form-encoded data, expects TwiML response
+    // Twilio TwiML response
     const streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
     const xml = this.config.providers.phone.getStreamConnectXml(streamUrl);
     res.writeHead(200, { 'Content-Type': 'application/xml' });
     res.end(xml);
   }
 
-  /**
-   * Handle Telnyx Call Control API v2 webhook events
-   */
   private async handleTelnyxWebhook(event: any, res: ServerResponse): Promise<void> {
     const eventType = event.data?.event_type;
     const callControlId = event.data?.payload?.call_control_id;
 
-    console.error(`Telnyx webhook: ${eventType} (callControlId: ${callControlId})`);
+    console.error(`Telnyx webhook: ${eventType}`);
 
-    // Always respond 200 OK immediately for Telnyx webhooks
+    // Always respond 200 OK immediately
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
 
@@ -199,98 +206,87 @@ export class CallManager {
     try {
       switch (eventType) {
         case 'call.initiated':
-          // Call is being placed, nothing to do yet
           break;
 
         case 'call.answered':
-          // Call was answered - start media streaming
           const streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
           await provider.startStreaming(callControlId, streamUrl);
           console.error(`Started streaming for call ${callControlId}`);
           break;
 
         case 'call.hangup':
-          // Call ended - clean up
           const callId = this.callControlIdToCallId.get(callControlId);
           if (callId) {
             this.callControlIdToCallId.delete(callControlId);
             const state = this.activeCalls.get(callId);
-            if (state?.ws) {
-              state.ws.close();
+            if (state) {
+              state.hungUp = true;
+              state.ws?.close();
             }
           }
           break;
 
+        case 'call.machine.detection.ended':
+          // AMD completed - log the result
+          const result = event.data?.payload?.result;
+          console.error(`AMD result: ${result}`);
+          break;
+
         case 'streaming.started':
-          // Media streaming is now active
-          console.error(`Streaming started for call ${callControlId}`);
-          break;
-
         case 'streaming.stopped':
-          // Media streaming stopped
-          console.error(`Streaming stopped for call ${callControlId}`);
           break;
-
-        default:
-          // Log other events for debugging
-          console.error(`Unhandled Telnyx event: ${eventType}`);
       }
     } catch (error) {
       console.error(`Error handling Telnyx webhook ${eventType}:`, error);
     }
   }
 
-  async initiateCall(userId: string, userPhoneNumber: string, message: string): Promise<{ callId: string; response: string }> {
+  async initiateCall(message: string): Promise<{ callId: string; response: string }> {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
 
     const state: CallState = {
       callId,
       callControlId: null,
-      userId,
-      userPhoneNumber,
+      userPhoneNumber: this.config.userPhoneNumber,
       ws: null,
       conversationHistory: [],
       startTime: Date.now(),
+      hungUp: false,
+      audioBuffer: [],
     };
 
     this.activeCalls.set(callId, state);
-    startCallTracking(callId, userId);
 
     try {
       const callControlId = await this.config.providers.phone.initiateCall(
-        userPhoneNumber,
+        this.config.userPhoneNumber,
         this.config.phoneNumber,
         `${this.config.publicUrl}/twiml`
       );
 
-      // Store callControlId for Telnyx API v2
       state.callControlId = callControlId;
       this.callControlIdToCallId.set(callControlId, callId);
 
-      console.error(`Call initiated: ${callControlId} -> ${userPhoneNumber} (callId: ${callId})`);
+      console.error(`Call initiated: ${callControlId} -> ${this.config.userPhoneNumber}`);
 
-      const ws = await this.waitForConnection(callId, 15000);
-      state.ws = ws;
+      await this.waitForConnection(callId, 15000);
 
-      const response = await this.speakAndListen(callId, message);
+      const response = await this.speakAndListen(state, message);
       state.conversationHistory.push({ speaker: 'claude', message });
       state.conversationHistory.push({ speaker: 'user', message: response });
 
       return { callId, response };
     } catch (error) {
       this.activeCalls.delete(callId);
-      endCallTracking(callId);
       throw error;
     }
   }
 
   async continueCall(callId: string, message: string): Promise<string> {
     const state = this.activeCalls.get(callId);
-    if (!state) {
-      throw new Error(`No active call found with ID: ${callId}`);
-    }
+    if (!state) throw new Error(`No active call: ${callId}`);
 
-    const response = await this.speakAndListen(callId, message);
+    const response = await this.speakAndListen(state, message);
     state.conversationHistory.push({ speaker: 'claude', message });
     state.conversationHistory.push({ speaker: 'user', message: response });
 
@@ -299,104 +295,213 @@ export class CallManager {
 
   async endCall(callId: string, message: string): Promise<{ durationSeconds: number }> {
     const state = this.activeCalls.get(callId);
-    if (!state) {
-      throw new Error(`No active call found with ID: ${callId}`);
-    }
+    if (!state) throw new Error(`No active call: ${callId}`);
 
     await this.speak(state, message);
-    state.conversationHistory.push({ speaker: 'claude', message });
 
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.close();
+    // Actually hang up the call via Telnyx API
+    if (state.callControlId) {
+      const provider = this.config.providers.phone;
+      if (provider instanceof TelnyxPhoneProvider) {
+        await provider.hangup(state.callControlId);
+      }
     }
+
+    state.ws?.close();
+    state.hungUp = true;
 
     const durationSeconds = Math.round((Date.now() - state.startTime) / 1000);
     this.activeCalls.delete(callId);
 
-    endCallTracking(callId);
-    console.error(`Call ${callId} ended. Duration: ${durationSeconds}s`);
-
     return { durationSeconds };
   }
 
-  private async waitForConnection(callId: string, timeout: number): Promise<WebSocket> {
+  private async waitForConnection(callId: string, timeout: number): Promise<void> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeout) {
       const state = this.activeCalls.get(callId);
       if (state?.ws && state.ws.readyState === WebSocket.OPEN) {
-        return state.ws;
+        return;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    throw new Error('WebSocket connection timeout - call may not have been answered');
+    throw new Error('WebSocket connection timeout');
   }
 
-  private async speakAndListen(callId: string, text: string): Promise<string> {
-    const state = this.activeCalls.get(callId);
-    if (!state) throw new Error(`No active call: ${callId}`);
+  private async speakAndListen(state: CallState, text: string): Promise<string> {
+    // Clear audio buffer before speaking
+    state.audioBuffer = [];
 
+    // Speak
     await this.speak(state, text);
+
+    // Now listen - audio is already being buffered by WebSocket handler
     return await this.listen(state);
   }
 
   private async speak(state: CallState, text: string): Promise<void> {
     console.error(`[${state.callId}] Speaking: ${text.substring(0, 50)}...`);
 
-    // Use TTS provider to synthesize speech
-    const pcmData = await this.config.providers.tts.synthesize(text);
-    const muLawData = this.pcmToMuLaw(pcmData);
+    const ttsProvider = this.config.providers.tts as any;
 
-    // Send audio in chunks
+    // Use streaming if available for lower latency
+    if (typeof ttsProvider.synthesizeStream === 'function') {
+      await this.speakStreaming(state, text, ttsProvider);
+    } else {
+      // Fallback to non-streaming
+      const pcmData = await this.config.providers.tts.synthesize(text);
+      await this.sendAudio(state, pcmData);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    console.error(`[${state.callId}] Speaking done`);
+  }
+
+  private async speakStreaming(state: CallState, text: string, ttsProvider: any): Promise<void> {
+    let pendingPcm = Buffer.alloc(0);
+    let pendingMuLaw = Buffer.alloc(0);
+    const OUTPUT_CHUNK_SIZE = 160; // 20ms at 8kHz
+    const SAMPLES_PER_RESAMPLE = 6; // Need 6 bytes (3 samples) of 24kHz to get 1 sample at 8kHz
+
+    for await (const chunk of ttsProvider.synthesizeStream(text)) {
+      // Accumulate PCM data
+      pendingPcm = Buffer.concat([pendingPcm, chunk]);
+
+      // Process complete resample units (6 bytes = 3 samples at 24kHz -> 1 sample at 8kHz)
+      const completeUnits = Math.floor(pendingPcm.length / SAMPLES_PER_RESAMPLE);
+      if (completeUnits > 0) {
+        const bytesToProcess = completeUnits * SAMPLES_PER_RESAMPLE;
+        const toProcess = pendingPcm.subarray(0, bytesToProcess);
+        pendingPcm = pendingPcm.subarray(bytesToProcess);
+
+        // Resample and convert to mu-law
+        const resampled = this.resample24kTo8k(toProcess);
+        const muLaw = this.pcmToMuLaw(resampled);
+        pendingMuLaw = Buffer.concat([pendingMuLaw, muLaw]);
+
+        // Send complete chunks
+        while (pendingMuLaw.length >= OUTPUT_CHUNK_SIZE) {
+          const chunk = pendingMuLaw.subarray(0, OUTPUT_CHUNK_SIZE);
+          pendingMuLaw = pendingMuLaw.subarray(OUTPUT_CHUNK_SIZE);
+
+          if (state.ws?.readyState === WebSocket.OPEN) {
+            state.ws.send(JSON.stringify({
+              event: 'media',
+              media: { payload: chunk.toString('base64') },
+            }));
+          }
+          await new Promise((resolve) => setTimeout(resolve, 18)); // Slightly faster than 20ms
+        }
+      }
+    }
+
+    // Send any remaining audio
+    if (pendingMuLaw.length > 0 && state.ws?.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({
+        event: 'media',
+        media: { payload: pendingMuLaw.toString('base64') },
+      }));
+    }
+  }
+
+  private async sendAudio(state: CallState, pcmData: Buffer): Promise<void> {
+    const resampledPcm = this.resample24kTo8k(pcmData);
+    const muLawData = this.pcmToMuLaw(resampledPcm);
+
     const chunkSize = 160;
     for (let i = 0; i < muLawData.length; i += chunkSize) {
-      const chunk = muLawData.slice(i, i + chunkSize);
-      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      const chunk = muLawData.subarray(i, i + chunkSize);
+      if (state.ws?.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify({
           event: 'media',
           media: { payload: chunk.toString('base64') },
         }));
       }
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await new Promise((resolve) => setTimeout(resolve, 18));
+    }
+  }
+
+  /**
+   * Calculate RMS energy of mu-law audio data
+   * Returns a value between 0 and 1 representing audio energy
+   */
+  private calculateEnergy(muLawData: Buffer): number {
+    if (muLawData.length === 0) return 0;
+
+    let sumSquares = 0;
+    for (let i = 0; i < muLawData.length; i++) {
+      // Convert mu-law to linear PCM for energy calculation
+      const pcm = this.muLawToPcm(muLawData[i]);
+      // Normalize to -1 to 1 range
+      const normalized = pcm / 32768;
+      sumSquares += normalized * normalized;
     }
 
-    // Wait for speech to finish
-    await new Promise((resolve) => setTimeout(resolve, text.length * 50));
+    return Math.sqrt(sumSquares / muLawData.length);
   }
 
   private async listen(state: CallState): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const audioChunks: Buffer[] = [];
-      let silenceTimer: NodeJS.Timeout | null = null;
-      const SILENCE_THRESHOLD = 2000;
+    console.error(`[${state.callId}] Listening...`);
 
-      const onMessage = async (message: Buffer | string) => {
-        try {
-          const msg = JSON.parse(message.toString());
-          if (msg.event === 'media' && msg.media?.payload) {
-            const audioData = Buffer.from(msg.media.payload, 'base64');
-            audioChunks.push(audioData);
+    const SILENCE_THRESHOLD_MS = 1500; // 1.5 seconds of silence to end
+    const VOICE_ENERGY_THRESHOLD = 0.02; // RMS threshold for voice activity
+    const MIN_VOICE_DURATION_MS = 300; // Minimum voice duration before we start silence timer
 
-            if (silenceTimer) clearTimeout(silenceTimer);
-            silenceTimer = setTimeout(async () => {
-              state.ws?.off('message', onMessage);
-              const transcript = await this.transcribeAudio(audioChunks);
-              console.error(`[${state.callId}] User said: ${transcript}`);
-              resolve(transcript);
-            }, SILENCE_THRESHOLD);
+    let voiceDetected = false;
+    let voiceStartTime = 0;
+    let silenceStartTime = Date.now();
+    let lastProcessedChunk = 0;
+
+    while (!state.hungUp) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Process new audio chunks
+      const chunks = state.audioBuffer.slice(lastProcessedChunk);
+      lastProcessedChunk = state.audioBuffer.length;
+
+      if (chunks.length > 0) {
+        // Calculate energy of new chunks combined
+        const combined = Buffer.concat(chunks);
+        const energy = this.calculateEnergy(combined);
+
+        if (energy > VOICE_ENERGY_THRESHOLD) {
+          // Voice detected
+          if (!voiceDetected) {
+            voiceDetected = true;
+            voiceStartTime = Date.now();
+            console.error(`[${state.callId}] Voice activity started (energy: ${energy.toFixed(4)})`);
           }
-        } catch (error) {
-          console.error('Error processing message:', error);
+          silenceStartTime = Date.now();
+        } else if (voiceDetected) {
+          // Silence after voice
+          const voiceDuration = Date.now() - voiceStartTime;
+          const silenceDuration = Date.now() - silenceStartTime;
+
+          if (voiceDuration >= MIN_VOICE_DURATION_MS && silenceDuration >= SILENCE_THRESHOLD_MS) {
+            // Enough voice followed by enough silence - transcribe
+            console.error(`[${state.callId}] Voice ended after ${voiceDuration}ms, transcribing ${state.audioBuffer.length} chunks...`);
+            const transcript = await this.transcribeAudio(state.audioBuffer);
+            console.error(`[${state.callId}] User said: ${transcript}`);
+            return transcript;
+          }
         }
-      };
+      }
 
-      state.ws?.on('message', onMessage);
+      // Timeout after 30 seconds of no voice activity
+      if (!voiceDetected && Date.now() - silenceStartTime > 30000) {
+        throw new Error('Response timeout - no voice detected');
+      }
 
-      setTimeout(() => {
-        state.ws?.off('message', onMessage);
-        if (silenceTimer) clearTimeout(silenceTimer);
-        reject(new Error('Response timeout'));
-      }, 60000);
-    });
+      // Timeout after 60 seconds total
+      if (voiceDetected && Date.now() - voiceStartTime > 60000) {
+        // Force transcription after 60 seconds of voice
+        console.error(`[${state.callId}] Max duration reached, transcribing...`);
+        const transcript = await this.transcribeAudio(state.audioBuffer);
+        return transcript;
+      }
+    }
+
+    throw new Error('Call was hung up by user');
   }
 
   private async transcribeAudio(audioChunks: Buffer[]): Promise<string> {
@@ -405,8 +510,20 @@ export class CallManager {
     const fullAudio = Buffer.concat(audioChunks);
     const wavBuffer = this.muLawToWav(fullAudio);
 
-    // Use STT provider
     return await this.config.providers.stt.transcribe(wavBuffer);
+  }
+
+  private resample24kTo8k(pcmData: Buffer): Buffer {
+    const inputSamples = pcmData.length / 2;
+    const outputSamples = Math.floor(inputSamples / 3);
+    const output = Buffer.alloc(outputSamples * 2);
+
+    for (let i = 0; i < outputSamples; i++) {
+      const sample = pcmData.readInt16LE(i * 3 * 2);
+      output.writeInt16LE(sample, i * 2);
+    }
+
+    return output;
   }
 
   private pcmToMuLaw(pcmData: Buffer): Buffer {
@@ -464,9 +581,13 @@ export class CallManager {
     return sign ? -sample : sample;
   }
 
+  getHttpServer() {
+    return this.httpServer;
+  }
+
   shutdown(): void {
     for (const callId of this.activeCalls.keys()) {
-      this.endCall(callId, 'The service is shutting down. Goodbye!').catch(console.error);
+      this.endCall(callId, 'Goodbye!').catch(console.error);
     }
     this.wss?.close();
     this.httpServer?.close();

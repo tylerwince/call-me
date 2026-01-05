@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "callme",
-      "source": "."
+      "source": "./"
     }
   ]
 }
