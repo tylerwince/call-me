@@ -25,6 +25,7 @@ export interface ServerConfig {
   phoneNumber: string;
   userPhoneNumber: string;
   providers: ProviderRegistry;
+  transcriptTimeoutMs: number;
 }
 
 export function loadServerConfig(publicUrl: string): ServerConfig {
@@ -41,12 +42,16 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
 
   const providers = createProviders(providerConfig);
 
+  // Default 3 minutes for transcript timeout
+  const transcriptTimeoutMs = parseInt(process.env.CALLME_TRANSCRIPT_TIMEOUT_MS || '180000', 10);
+
   return {
     publicUrl,
     port: parseInt(process.env.CALLME_PORT || '3333', 10),
     phoneNumber: providerConfig.phoneNumber,
     userPhoneNumber: process.env.CALLME_USER_PHONE_NUMBER!,
     providers,
+    transcriptTimeoutMs,
   };
 }
 
@@ -420,7 +425,7 @@ export class CallManager {
       throw new Error('STT session not available');
     }
 
-    const transcript = await state.sttSession.waitForTranscript(30000);
+    const transcript = await state.sttSession.waitForTranscript(this.config.transcriptTimeoutMs);
 
     if (state.hungUp) {
       throw new Error('Call was hung up by user');

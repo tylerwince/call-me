@@ -22,9 +22,14 @@ export interface ProviderConfig {
   openaiApiKey: string;
   ttsVoice?: string;
   sttModel?: string;
+  sttSilenceDurationMs?: number;
 }
 
 export function loadProviderConfig(): ProviderConfig {
+  const sttSilenceDurationMs = process.env.CALLME_STT_SILENCE_DURATION_MS
+    ? parseInt(process.env.CALLME_STT_SILENCE_DURATION_MS, 10)
+    : undefined;
+
   return {
     phoneAccountSid: process.env.CALLME_PHONE_ACCOUNT_SID || '',
     phoneAuthToken: process.env.CALLME_PHONE_AUTH_TOKEN || '',
@@ -32,6 +37,7 @@ export function loadProviderConfig(): ProviderConfig {
     openaiApiKey: process.env.CALLME_OPENAI_API_KEY || '',
     ttsVoice: process.env.CALLME_TTS_VOICE || 'onyx',
     sttModel: process.env.CALLME_STT_MODEL || 'gpt-4o-transcribe',
+    sttSilenceDurationMs,
   };
 }
 
@@ -59,6 +65,7 @@ export function createSTTProvider(config: ProviderConfig): RealtimeSTTProvider {
   provider.initialize({
     apiKey: config.openaiApiKey,
     model: config.sttModel,
+    silenceDurationMs: config.sttSilenceDurationMs,
   });
   return provider;
 }

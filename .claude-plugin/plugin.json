@@ -15,17 +15,29 @@
       "command": "bun",
       "args": ["run", "${CLAUDE_PLUGIN_ROOT}/server/src/index.ts"],
       "env": {
-        "CALLME_PHONE_PROVIDER": "${CALLME_PHONE_PROVIDER:-telnyx}",
         "CALLME_PHONE_ACCOUNT_SID": "${CALLME_PHONE_ACCOUNT_SID}",
         "CALLME_PHONE_AUTH_TOKEN": "${CALLME_PHONE_AUTH_TOKEN}",
         "CALLME_PHONE_NUMBER": "${CALLME_PHONE_NUMBER}",
         "CALLME_USER_PHONE_NUMBER": "${CALLME_USER_PHONE_NUMBER}",
         "CALLME_OPENAI_API_KEY": "${CALLME_OPENAI_API_KEY}",
-        "CALLME_TTS_PROVIDER": "${CALLME_TTS_PROVIDER:-openai}",
         "CALLME_TTS_VOICE": "${CALLME_TTS_VOICE:-onyx}",
         "CALLME_NGROK_AUTHTOKEN": "${CALLME_NGROK_AUTHTOKEN}",
-        "CALLME_PORT": "${CALLME_PORT:-3333}"
+        "CALLME_PORT": "${CALLME_PORT:-3333}",
+        "CALLME_TRANSCRIPT_TIMEOUT_MS": "${CALLME_TRANSCRIPT_TIMEOUT_MS:-180000}",
+        "CALLME_STT_SILENCE_DURATION_MS": "${CALLME_STT_SILENCE_DURATION_MS:-800}"
       }
     }
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Evaluate if Claude should call the user to report progress or ask for what to do next. If yes, use the initiate_call tool."
+          }
+        ]
+      }
+    ]
   }
 }

@@ -14,6 +14,7 @@ export class OpenAIRealtimeSTTProvider implements RealtimeSTTProvider {
   readonly name = 'openai-realtime';
   private apiKey: string | null = null;
   private model: string = 'gpt-4o-transcribe';
+  private silenceDurationMs: number = 800;
 
   initialize(config: STTConfig): void {
     if (!config.apiKey) {
@@ -21,12 +22,13 @@ export class OpenAIRealtimeSTTProvider implements RealtimeSTTProvider {
     }
     this.apiKey = config.apiKey;
     this.model = config.model || 'gpt-4o-transcribe';
-    console.error(`STT provider: OpenAI Realtime (${this.model})`);
+    this.silenceDurationMs = config.silenceDurationMs || 800;
+    console.error(`STT provider: OpenAI Realtime (${this.model}, silence: ${this.silenceDurationMs}ms)`);
   }
 
   createSession(): RealtimeSTTSession {
     if (!this.apiKey) throw new Error('OpenAI Realtime STT not initialized');
-    return new OpenAIRealtimeSTTSession(this.apiKey, this.model);
+    return new OpenAIRealtimeSTTSession(this.apiKey, this.model, this.silenceDurationMs);
   }
 }
 
@@ -34,14 +36,16 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
   private ws: WebSocket | null = null;
   private apiKey: string;
   private model: string;
+  private silenceDurationMs: number;
   private connected = false;
   private pendingTranscript = '';
   private onTranscriptCallback: ((transcript: string) => void) | null = null;
   private onPartialCallback: ((partial: string) => void) | null = null;
 
-  constructor(apiKey: string, model: string) {
+  constructor(apiKey: string, model: string, silenceDurationMs: number) {
     this.apiKey = apiKey;
     this.model = model;
+    this.silenceDurationMs = silenceDurationMs;
   }
 
   async connect(): Promise<void> {
@@ -71,7 +75,7 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
               type: 'server_vad',
               threshold: 0.5,
               prefix_padding_ms: 300,
-              silence_duration_ms: 800,
+              silence_duration_ms: this.silenceDurationMs,
             },
           },
         });

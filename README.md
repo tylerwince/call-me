@@ -7,28 +7,22 @@
 ### 1. Get Required Accounts
 
 You'll need:
-- **Phone provider**: [Telnyx](https://telnyx.com) (recommended, ~$0.007/min) or [Twilio](https://twilio.com) (~$0.014/min)
+- **Phone provider**: [Telnyx](https://telnyx.com) (r~$0.007/min)
 - **OpenAI API key**: For speech-to-text and text-to-speech
 - **ngrok account**: Free at [ngrok.com](https://ngrok.com) (for webhook tunneling)
 
 ### 2. Set Up Phone Provider
 
-**Telnyx (recommended):**
+**Telnyx:**
 1. Create account at [portal.telnyx.com](https://portal.telnyx.com)
 2. Buy a phone number (~$1/month)
 3. Create a "Call Control" application
 4. Note your Connection ID and API Key
 
-**Twilio:**
-1. Create account at [console.twilio.com](https://console.twilio.com)
-2. Buy a phone number (~$1/month)
-3. Note your Account SID and Auth Token
-
 ### 3. Set Environment Variables
 
 ```bash
 # Phone provider
-export CALLME_PHONE_PROVIDER=telnyx
 export CALLME_PHONE_ACCOUNT_SID=your_connection_id
 export CALLME_PHONE_AUTH_TOKEN=your_api_key
 export CALLME_PHONE_NUMBER=+1234567890  # Your Telnyx/Twilio number
@@ -64,7 +58,7 @@ Plugin ────stdio──────────────────�
                                          ├─► ngrok tunnel
                                          │
                                          ▼
-                                   Phone Provider (Telnyx/Twilio)
+                                   Phone Provider (Telnyx)
                                          │
                                          ▼
                                    Your Phone rings
@@ -127,22 +121,22 @@ Running your own CallMe server costs:
 
 All configuration is via environment variables. See [.env.example](.env.example) for the full list.
 
+**Important:** I've found that putting the env vars in `~/.claude/settings.json` (or the corresponding Claude Code config file for your plugin install scope) consistently works vs trying to export them to your shell directly. See [Claude docs](https://code.claude.com/docs/en/settings) for example configs.
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `CALLME_PHONE_PROVIDER` | No | `telnyx` | `telnyx` or `twilio` |
 | `CALLME_PHONE_ACCOUNT_SID` | Yes | - | Provider account/connection ID |
 | `CALLME_PHONE_AUTH_TOKEN` | Yes | - | Provider auth token |
 | `CALLME_PHONE_NUMBER` | Yes | - | Outbound caller ID |
 | `CALLME_USER_PHONE_NUMBER` | Yes | - | Your personal phone |
 | `CALLME_OPENAI_API_KEY` | Yes | - | For STT and TTS |
-| `CALLME_TTS_PROVIDER` | No | `openai` | `openai` or `chatterbox` |
 | `CALLME_NGROK_AUTHTOKEN` | Yes | - | ngrok auth token |
 | `CALLME_PORT` | No | `3333` | Local HTTP port |
 
 ## Troubleshooting
 
 ### Claude doesn't use the tool
-1. Check all required environment variables are set
+1. Check all required environment variables are set (ideally in `~/.claude/settings.json`)
 2. Restart Claude Code after installing the plugin
 3. Try explicitly: "Call me to discuss the next steps"
 

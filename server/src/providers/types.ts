@@ -103,6 +103,7 @@ export interface STTConfig {
   apiKey?: string;
   apiUrl?: string;
   model?: string;
+  silenceDurationMs?: number;
 }
 
 /**

@@ -31,6 +31,8 @@ All environment variables are prefixed with `CALLME_`.
 | `CALLME_TTS_VOICE` | `onyx` | OpenAI voice: alloy, echo, fable, onyx, nova, shimmer |
 | `CALLME_PORT` | `3333` | Local HTTP server port |
 | `CALLME_NGROK_DOMAIN` | - | Custom ngrok domain (paid feature) |
+| `CALLME_TRANSCRIPT_TIMEOUT_MS` | `180000` | Timeout for user speech (3 minutes default) |
+| `CALLME_STT_SILENCE_DURATION_MS` | `800` | Silence duration to detect end of speech |
 
 ## Providers
 
