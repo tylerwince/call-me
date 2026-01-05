@@ -85,9 +85,9 @@ export interface TTSConfig {
 
 /**
  * Provider registry for dependency injection
+ * Note: STT is handled separately via OpenAI Realtime API
  */
 export interface ProviderRegistry {
   phone: PhoneProvider;
-  stt: STTProvider;
   tts: TTSProvider;
 }

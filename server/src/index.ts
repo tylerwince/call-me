@@ -144,7 +144,7 @@ async function main() {
   console.error('');
   console.error('CallMe MCP server ready');
   console.error(`Phone: ${serverConfig.phoneNumber} -> ${serverConfig.userPhoneNumber}`);
-  console.error(`Providers: phone=${serverConfig.providers.phone.name}, tts=${serverConfig.providers.tts.name}, stt=${serverConfig.providers.stt.name}`);
+  console.error(`Providers: phone=${serverConfig.providers.phone.name}, tts=${serverConfig.providers.tts.name}, stt=openai-realtime`);
   console.error('');
 
   // Graceful shutdown

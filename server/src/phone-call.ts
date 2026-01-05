@@ -7,6 +7,10 @@ import {
   type ProviderRegistry,
 } from './providers/index.js';
 import { TelnyxPhoneProvider } from './providers/phone-telnyx.js';
+import {
+  OpenAIRealtimeSTTProvider,
+  RealtimeTranscriptionSession,
+} from './providers/stt-openai-realtime.js';
 
 interface CallState {
   callId: string;
@@ -16,8 +20,8 @@ interface CallState {
   conversationHistory: Array<{ speaker: 'claude' | 'user'; message: string }>;
   startTime: number;
   hungUp: boolean;
-  // Audio buffer - always collecting incoming audio
-  audioBuffer: Buffer[];
+  // Realtime transcription session
+  realtimeSession: RealtimeTranscriptionSession | null;
 }
 
 export interface ServerConfig {
@@ -55,7 +59,7 @@ export class CallManager {
   private activeCalls = new Map<string, CallState>();
   private callControlIdToCallId = new Map<string, string>();
   private httpServer: ReturnType<typeof createServer> | null = null;
-  private wss: WebSocket.Server | null = null;
+  private wss: WebSocketServer | null = null;
   private config: ServerConfig;
   private currentCallId = 0;
 
@@ -82,7 +86,7 @@ export class CallManager {
       res.end('Not Found');
     });
 
-    this.wss = new WebSocket.Server({ noServer: true });
+    this.wss = new WebSocketServer({ noServer: true });
 
     this.httpServer.on('upgrade', (request: IncomingMessage, socket: any, head: Buffer) => {
       const url = new URL(request.url!, `http://${request.headers.host}`);
@@ -95,7 +99,7 @@ export class CallManager {
       }
     });
 
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', (ws: WebSocket) => {
       console.error('Media stream WebSocket connected');
       let associatedCallId: string | null = null;
 
@@ -114,13 +118,13 @@ export class CallManager {
           }
         }
 
-        // Extract and buffer audio
+        // Forward audio to realtime transcription session
         if (associatedCallId) {
           const state = this.activeCalls.get(associatedCallId);
-          if (state) {
-            const audioData = this.extractAudio(msgBuffer);
+          if (state?.realtimeSession) {
+            const audioData = this.extractInboundAudio(msgBuffer);
             if (audioData) {
-              state.audioBuffer.push(audioData);
+              state.realtimeSession.sendAudio(audioData);
             }
           }
         }
@@ -139,7 +143,7 @@ export class CallManager {
   /**
    * Extract INBOUND audio data from WebSocket message (filters out outbound/TTS audio)
    */
-  private extractAudio(msgBuffer: Buffer): Buffer | null {
+  private extractInboundAudio(msgBuffer: Buffer): Buffer | null {
     if (msgBuffer.length === 0) return null;
 
     // Binary audio (doesn't start with '{') - can't determine track, skip
@@ -244,6 +248,13 @@ export class CallManager {
   async initiateCall(message: string): Promise<{ callId: string; response: string }> {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
 
+    // Create realtime transcription session
+    const realtimeSession = this.createRealtimeSession();
+    if (realtimeSession) {
+      await realtimeSession.connect();
+      console.error(`[${callId}] Realtime transcription session connected`);
+    }
+
     const state: CallState = {
       callId,
       callControlId: null,
@@ -252,7 +263,7 @@ export class CallManager {
       conversationHistory: [],
       startTime: Date.now(),
       hungUp: false,
-      audioBuffer: [],
+      realtimeSession,
     };
 
     this.activeCalls.set(callId, state);
@@ -277,9 +288,22 @@ export class CallManager {
 
       return { callId, response };
     } catch (error) {
+      state.realtimeSession?.close();
       this.activeCalls.delete(callId);
       throw error;
     }
+  }
+
+  private createRealtimeSession(): RealtimeTranscriptionSession | null {
+    const apiKey = process.env.CALLME_OPENAI_API_KEY;
+    if (!apiKey) {
+      console.error('Warning: CALLME_OPENAI_API_KEY not set, realtime transcription disabled');
+      return null;
+    }
+
+    const provider = new OpenAIRealtimeSTTProvider();
+    provider.initialize({ apiKey });
+    return provider.createRealtimeSession();
   }
 
   async continueCall(callId: string, message: string): Promise<string> {
@@ -307,6 +331,8 @@ export class CallManager {
       }
     }
 
+    // Close realtime transcription session
+    state.realtimeSession?.close();
     state.ws?.close();
     state.hungUp = true;
 
@@ -329,13 +355,10 @@ export class CallManager {
   }
 
   private async speakAndListen(state: CallState, text: string): Promise<string> {
-    // Clear audio buffer before speaking
-    state.audioBuffer = [];
-
     // Speak
     await this.speak(state, text);
 
-    // Now listen - audio is already being buffered by WebSocket handler
+    // Listen using realtime transcription
     return await this.listen(state);
   }
 
@@ -421,96 +444,23 @@ export class CallManager {
     }
   }
 
-  /**
-   * Calculate RMS energy of mu-law audio data
-   * Returns a value between 0 and 1 representing audio energy
-   */
-  private calculateEnergy(muLawData: Buffer): number {
-    if (muLawData.length === 0) return 0;
-
-    let sumSquares = 0;
-    for (let i = 0; i < muLawData.length; i++) {
-      // Convert mu-law to linear PCM for energy calculation
-      const pcm = this.muLawToPcm(muLawData[i]);
-      // Normalize to -1 to 1 range
-      const normalized = pcm / 32768;
-      sumSquares += normalized * normalized;
-    }
-
-    return Math.sqrt(sumSquares / muLawData.length);
-  }
-
   private async listen(state: CallState): Promise<string> {
-    console.error(`[${state.callId}] Listening...`);
+    console.error(`[${state.callId}] Listening (realtime transcription)...`);
 
-    const SILENCE_THRESHOLD_MS = 1500; // 1.5 seconds of silence to end
-    const VOICE_ENERGY_THRESHOLD = 0.02; // RMS threshold for voice activity
-    const MIN_VOICE_DURATION_MS = 300; // Minimum voice duration before we start silence timer
-
-    let voiceDetected = false;
-    let voiceStartTime = 0;
-    let silenceStartTime = Date.now();
-    let lastProcessedChunk = 0;
-
-    while (!state.hungUp) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Process new audio chunks
-      const chunks = state.audioBuffer.slice(lastProcessedChunk);
-      lastProcessedChunk = state.audioBuffer.length;
-
-      if (chunks.length > 0) {
-        // Calculate energy of new chunks combined
-        const combined = Buffer.concat(chunks);
-        const energy = this.calculateEnergy(combined);
-
-        if (energy > VOICE_ENERGY_THRESHOLD) {
-          // Voice detected
-          if (!voiceDetected) {
-            voiceDetected = true;
-            voiceStartTime = Date.now();
-            console.error(`[${state.callId}] Voice activity started (energy: ${energy.toFixed(4)})`);
-          }
-          silenceStartTime = Date.now();
-        } else if (voiceDetected) {
-          // Silence after voice
-          const voiceDuration = Date.now() - voiceStartTime;
-          const silenceDuration = Date.now() - silenceStartTime;
-
-          if (voiceDuration >= MIN_VOICE_DURATION_MS && silenceDuration >= SILENCE_THRESHOLD_MS) {
-            // Enough voice followed by enough silence - transcribe
-            console.error(`[${state.callId}] Voice ended after ${voiceDuration}ms, transcribing ${state.audioBuffer.length} chunks...`);
-            const transcript = await this.transcribeAudio(state.audioBuffer);
-            console.error(`[${state.callId}] User said: ${transcript}`);
-            return transcript;
-          }
-        }
-      }
-
-      // Timeout after 30 seconds of no voice activity
-      if (!voiceDetected && Date.now() - silenceStartTime > 30000) {
-        throw new Error('Response timeout - no voice detected');
-      }
-
-      // Timeout after 60 seconds total
-      if (voiceDetected && Date.now() - voiceStartTime > 60000) {
-        // Force transcription after 60 seconds of voice
-        console.error(`[${state.callId}] Max duration reached, transcribing...`);
-        const transcript = await this.transcribeAudio(state.audioBuffer);
-        return transcript;
-      }
+    if (!state.realtimeSession) {
+      throw new Error('Realtime transcription session not available');
     }
 
-    throw new Error('Call was hung up by user');
-  }
+    // Wait for transcript from the realtime session
+    // The server VAD handles turn detection automatically
+    const transcript = await state.realtimeSession.waitForTranscript(30000);
 
-  private async transcribeAudio(audioChunks: Buffer[]): Promise<string> {
-    if (audioChunks.length === 0) return '';
+    if (state.hungUp) {
+      throw new Error('Call was hung up by user');
+    }
 
-    const fullAudio = Buffer.concat(audioChunks);
-    const wavBuffer = this.muLawToWav(fullAudio);
-
-    return await this.config.providers.stt.transcribe(wavBuffer);
+    console.error(`[${state.callId}] User said: ${transcript}`);
+    return transcript;
   }
 
   private resample24kTo8k(pcmData: Buffer): Buffer {
@@ -548,37 +498,6 @@ export class CallManager {
     }
     const mantissa = (pcm >> (exponent + 3)) & 0x0f;
     return (~(sign | (exponent << 4) | mantissa)) & 0xff;
-  }
-
-  private muLawToWav(muLawData: Buffer): Buffer {
-    const pcmData = Buffer.alloc(muLawData.length * 2);
-    for (let i = 0; i < muLawData.length; i++) {
-      pcmData.writeInt16LE(this.muLawToPcm(muLawData[i]), i * 2);
-    }
-    const header = Buffer.alloc(44);
-    header.write('RIFF', 0);
-    header.writeUInt32LE(36 + pcmData.length, 4);
-    header.write('WAVE', 8);
-    header.write('fmt ', 12);
-    header.writeUInt32LE(16, 16);
-    header.writeUInt16LE(1, 20);
-    header.writeUInt16LE(1, 22);
-    header.writeUInt32LE(8000, 24);
-    header.writeUInt32LE(16000, 28);
-    header.writeUInt16LE(2, 32);
-    header.writeUInt16LE(16, 34);
-    header.write('data', 36);
-    header.writeUInt32LE(pcmData.length, 40);
-    return Buffer.concat([header, pcmData]);
-  }
-
-  private muLawToPcm(muLaw: number): number {
-    muLaw = ~muLaw & 0xff;
-    const sign = muLaw & 0x80;
-    const exponent = (muLaw >> 4) & 0x07;
-    const mantissa = muLaw & 0x0f;
-    let sample = ((mantissa << 3) + 0x84) << exponent;
-    return sign ? -sample : sample;
   }
 
   getHttpServer() {

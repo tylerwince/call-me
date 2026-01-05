@@ -1,6 +1,6 @@
 # CallMe Server
 
-MCP server that lets Claude call you on the phone. Runs as a stdio-based MCP server with automatic ngrok tunneling for phone provider webhooks.
+MCP server that lets Claude call you on the phone. Uses Telnyx for phone calls, OpenAI for TTS, and OpenAI Realtime API for streaming speech-to-text.
 
 ## Setup
 
@@ -17,47 +17,28 @@ All environment variables are prefixed with `CALLME_`.
 
 | Variable | Description |
 |----------|-------------|
-| `CALLME_PHONE_ACCOUNT_SID` | Telnyx Connection ID or Twilio Account SID |
-| `CALLME_PHONE_AUTH_TOKEN` | Telnyx API Key or Twilio Auth Token |
-| `CALLME_PHONE_NUMBER` | Your Telnyx/Twilio phone number (E.164 format) |
+| `CALLME_PHONE_ACCOUNT_SID` | Telnyx Connection ID |
+| `CALLME_PHONE_AUTH_TOKEN` | Telnyx API Key |
+| `CALLME_PHONE_NUMBER` | Your Telnyx phone number (E.164 format) |
 | `CALLME_USER_PHONE_NUMBER` | Your personal phone number to receive calls |
-| `CALLME_OPENAI_API_KEY` | OpenAI API key (for STT and optionally TTS) |
+| `CALLME_OPENAI_API_KEY` | OpenAI API key (for TTS and realtime STT) |
 | `CALLME_NGROK_AUTHTOKEN` | ngrok auth token for webhook tunneling |
 
 ### Optional
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CALLME_PHONE_PROVIDER` | `telnyx` | Phone provider: `telnyx` or `twilio` |
-| `CALLME_TTS_PROVIDER` | `openai` | TTS provider: `openai` or `chatterbox` |
-| `CALLME_STT_MODEL` | `gpt-4o-mini-transcribe` | STT model: `gpt-4o-mini-transcribe` or `whisper-1` |
 | `CALLME_TTS_VOICE` | `onyx` | OpenAI voice: alloy, echo, fable, onyx, nova, shimmer |
-| `CALLME_CHATTERBOX_URL` | `http://localhost:5100` | Chatterbox server URL (if using chatterbox) |
 | `CALLME_PORT` | `3333` | Local HTTP server port |
 | `CALLME_NGROK_DOMAIN` | - | Custom ngrok domain (paid feature) |
 
 ## Providers
 
-### Phone Providers
-
-| Provider | Cost | Notes |
-|----------|------|-------|
-| **Telnyx** (default) | ~$0.007/min | 50% cheaper than Twilio |
-| Twilio | ~$0.014/min | Industry standard |
-
-### STT Providers
-
-| Model | Cost | Notes |
-|-------|------|-------|
-| **gpt-4o-mini-transcribe** (default) | $0.003/min | Faster, cheaper |
-| whisper-1 | $0.006/min | Original Whisper |
-
-### TTS Providers
-
-| Provider | Cost | Notes |
-|----------|------|-------|
-| **OpenAI** (default) | ~$15/1M chars | Cloud-based |
-| Chatterbox | Free | Self-hosted, requires Docker |
+| Service | Provider | Notes |
+|---------|----------|-------|
+| Phone | Telnyx | ~$0.007/min, Call Control API v2 |
+| TTS | OpenAI | Streaming TTS with low latency |
+| STT | OpenAI Realtime | Real-time streaming transcription with server VAD |
 
 ## Running
 
@@ -81,9 +62,9 @@ bun run dev
 │                                                             │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
 │  │ MCP Tools   │    │ CallManager │    │  Providers  │     │
-│  │ • initiate  │───▶│ • speak     │───▶│ • Phone     │     │
-│  │ • continue  │    │ • listen    │    │ • TTS       │     │
-│  │ • end_call  │    │ • transcribe│    │ • STT       │     │
+│  │ • initiate  │───▶│ • speak     │───▶│ • Telnyx    │     │
+│  │ • continue  │    │ • listen    │    │ • OpenAI    │     │
+│  │ • end_call  │    │             │    │   TTS/STT   │     │
 │  └─────────────┘    └─────────────┘    └─────────────┘     │
 │                            │                                │
 │                            ▼                                │
@@ -91,6 +72,12 @@ bun run dev
 │  │ HTTP Server (webhooks) ◄── ngrok tunnel             │   │
 │  │ • /twiml (phone webhooks)                           │   │
 │  │ • /media-stream (WebSocket for audio)               │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ OpenAI Realtime API (WebSocket)                     │   │
+│  │ • Streaming transcription with server VAD           │   │
+│  │ • Automatic turn detection                          │   │
 │  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
