@@ -8,9 +8,9 @@
  */
 
 import WebSocket from 'ws';
-import type { STTProvider, STTConfig } from './types.js';
+import type { RealtimeSTTProvider, RealtimeSTTSession, STTConfig } from './types.js';
 
-export class OpenAIRealtimeSTTProvider implements STTProvider {
+export class OpenAIRealtimeSTTProvider implements RealtimeSTTProvider {
   readonly name = 'openai-realtime';
   private apiKey: string | null = null;
   private model: string = 'gpt-4o-transcribe';
@@ -24,24 +24,13 @@ export class OpenAIRealtimeSTTProvider implements STTProvider {
     console.error(`STT provider: OpenAI Realtime (${this.model})`);
   }
 
-  /**
-   * Legacy method - not used for realtime, but required by interface
-   */
-  async transcribe(audioBuffer: Buffer): Promise<string> {
-    throw new Error('Use createRealtimeSession() for streaming transcription');
-  }
-
-  /**
-   * Create a realtime transcription session
-   * Returns a controller object for sending audio and receiving transcripts
-   */
-  createRealtimeSession(): RealtimeTranscriptionSession {
+  createSession(): RealtimeSTTSession {
     if (!this.apiKey) throw new Error('OpenAI Realtime STT not initialized');
-    return new RealtimeTranscriptionSession(this.apiKey, this.model);
+    return new OpenAIRealtimeSTTSession(this.apiKey, this.model);
   }
 }
 
-export class RealtimeTranscriptionSession {
+class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
   private ws: WebSocket | null = null;
   private apiKey: string;
   private model: string;
@@ -55,9 +44,6 @@ export class RealtimeTranscriptionSession {
     this.model = model;
   }
 
-  /**
-   * Connect to OpenAI Realtime API
-   */
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       const url = 'wss://api.openai.com/v1/realtime?intent=transcription';
@@ -85,7 +71,7 @@ export class RealtimeTranscriptionSession {
               type: 'server_vad',
               threshold: 0.5,
               prefix_padding_ms: 300,
-              silence_duration_ms: 800, // Slightly shorter for faster response
+              silence_duration_ms: 800,
             },
           },
         });
@@ -112,7 +98,6 @@ export class RealtimeTranscriptionSession {
         this.connected = false;
       });
 
-      // Timeout after 10 seconds
       setTimeout(() => {
         if (!this.connected) {
           reject(new Error('Realtime STT connection timeout'));
@@ -124,26 +109,21 @@ export class RealtimeTranscriptionSession {
   private handleEvent(event: any): void {
     switch (event.type) {
       case 'transcription_session.created':
-        console.error('[RealtimeSTT] Session created');
-        break;
-
       case 'transcription_session.updated':
-        console.error('[RealtimeSTT] Session updated');
+        console.error(`[RealtimeSTT] ${event.type}`);
         break;
 
       case 'conversation.item.input_audio_transcription.delta':
-        // Incremental transcript
-        if (event.delta && this.onPartialCallback) {
+        if (event.delta) {
           this.pendingTranscript += event.delta;
-          this.onPartialCallback(this.pendingTranscript);
+          this.onPartialCallback?.(this.pendingTranscript);
         }
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
-        // Final transcript for this turn
         console.error(`[RealtimeSTT] Transcript: ${event.transcript}`);
-        if (this.onTranscriptCallback && event.transcript) {
-          this.onTranscriptCallback(event.transcript);
+        if (event.transcript) {
+          this.onTranscriptCallback?.(event.transcript);
         }
         this.pendingTranscript = '';
         break;
@@ -164,10 +144,6 @@ export class RealtimeTranscriptionSession {
       case 'error':
         console.error('[RealtimeSTT] Error:', event.error);
         break;
-
-      default:
-        // Ignore other events
-        break;
     }
   }
 
@@ -177,36 +153,18 @@ export class RealtimeTranscriptionSession {
     }
   }
 
-  /**
-   * Send mu-law audio data to the transcription session
-   * Audio should be 8kHz mono mu-law (g711_ulaw)
-   */
   sendAudio(muLawData: Buffer): void {
     if (!this.connected) return;
-
     this.sendEvent({
       type: 'input_audio_buffer.append',
       audio: muLawData.toString('base64'),
     });
   }
 
-  /**
-   * Set callback for completed transcriptions (full turn)
-   */
-  onTranscript(callback: (transcript: string) => void): void {
-    this.onTranscriptCallback = callback;
-  }
-
-  /**
-   * Set callback for partial transcriptions (streaming)
-   */
   onPartial(callback: (partial: string) => void): void {
     this.onPartialCallback = callback;
   }
 
-  /**
-   * Wait for the next complete transcript
-   */
   async waitForTranscript(timeoutMs: number = 30000): Promise<string> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -222,9 +180,6 @@ export class RealtimeTranscriptionSession {
     });
   }
 
-  /**
-   * Close the session
-   */
   close(): void {
     if (this.ws) {
       this.ws.close();

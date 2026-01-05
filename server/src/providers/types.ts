@@ -1,8 +1,8 @@
 /**
  * Provider Interfaces
  *
- * Abstractions for Phone, STT, and TTS services to allow
- * swapping between different providers (e.g., Twilio vs Telnyx)
+ * Abstractions for Phone, STT, and TTS services.
+ * All providers use realtime streaming where applicable.
  */
 
 /**
@@ -18,12 +18,22 @@ export interface PhoneProvider {
 
   /**
    * Initiate an outbound call
-   * @returns Call SID/ID from the provider
+   * @returns Call control ID from the provider
    */
   initiateCall(to: string, from: string, webhookUrl: string): Promise<string>;
 
   /**
-   * Get TwiML/TeXML response for connecting media stream
+   * Hang up an active call
+   */
+  hangup(callControlId: string): Promise<void>;
+
+  /**
+   * Start media streaming for a call
+   */
+  startStreaming(callControlId: string, streamUrl: string): Promise<void>;
+
+  /**
+   * Get XML response for connecting media stream (used in webhooks)
    */
   getStreamConnectXml(streamUrl: string): string;
 }
@@ -35,9 +45,10 @@ export interface PhoneConfig {
 }
 
 /**
- * Speech-to-Text Provider
+ * Realtime Speech-to-Text Provider
+ * Provides streaming transcription with automatic turn detection
  */
-export interface STTProvider {
+export interface RealtimeSTTProvider {
   readonly name: string;
 
   /**
@@ -46,15 +57,51 @@ export interface STTProvider {
   initialize(config: STTConfig): void;
 
   /**
-   * Transcribe audio buffer to text
-   * @param audio WAV audio buffer
+   * Create a new realtime transcription session
    */
-  transcribe(audio: Buffer): Promise<string>;
+  createSession(): RealtimeSTTSession;
+}
+
+/**
+ * Realtime STT Session - handles streaming audio and receiving transcripts
+ */
+export interface RealtimeSTTSession {
+  /**
+   * Connect to the transcription service
+   */
+  connect(): Promise<void>;
+
+  /**
+   * Send audio data to the transcription session
+   * @param audio mu-law audio buffer (8kHz mono)
+   */
+  sendAudio(audio: Buffer): void;
+
+  /**
+   * Wait for the next complete transcript (after VAD detects end of speech)
+   * @param timeoutMs Maximum time to wait
+   */
+  waitForTranscript(timeoutMs?: number): Promise<string>;
+
+  /**
+   * Set callback for partial transcriptions (streaming)
+   */
+  onPartial(callback: (partial: string) => void): void;
+
+  /**
+   * Close the session
+   */
+  close(): void;
+
+  /**
+   * Check if session is connected
+   */
+  isConnected(): boolean;
 }
 
 export interface STTConfig {
   apiKey?: string;
-  apiUrl?: string;  // For self-hosted providers
+  apiUrl?: string;
   model?: string;
 }
 
@@ -71,23 +118,28 @@ export interface TTSProvider {
 
   /**
    * Convert text to speech
-   * @returns PCM audio buffer (16-bit, mono)
+   * @returns PCM audio buffer (16-bit, mono, 24kHz)
    */
   synthesize(text: string): Promise<Buffer>;
+
+  /**
+   * Stream TTS audio as chunks arrive (optional, for lower latency)
+   */
+  synthesizeStream?(text: string): AsyncGenerator<Buffer>;
 }
 
 export interface TTSConfig {
   apiKey?: string;
-  apiUrl?: string;  // For self-hosted providers
+  apiUrl?: string;
   voice?: string;
   model?: string;
 }
 
 /**
  * Provider registry for dependency injection
- * Note: STT is handled separately via OpenAI Realtime API
  */
 export interface ProviderRegistry {
   phone: PhoneProvider;
   tts: TTSProvider;
+  stt: RealtimeSTTProvider;
 }

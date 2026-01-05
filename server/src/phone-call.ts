@@ -5,12 +5,8 @@ import {
   createProviders,
   validateProviderConfig,
   type ProviderRegistry,
+  type RealtimeSTTSession,
 } from './providers/index.js';
-import { TelnyxPhoneProvider } from './providers/phone-telnyx.js';
-import {
-  OpenAIRealtimeSTTProvider,
-  RealtimeTranscriptionSession,
-} from './providers/stt-openai-realtime.js';
 
 interface CallState {
   callId: string;
@@ -20,8 +16,7 @@ interface CallState {
   conversationHistory: Array<{ speaker: 'claude' | 'user'; message: string }>;
   startTime: number;
   hungUp: boolean;
-  // Realtime transcription session
-  realtimeSession: RealtimeTranscriptionSession | null;
+  sttSession: RealtimeSTTSession | null;
 }
 
 export interface ServerConfig {
@@ -121,10 +116,10 @@ export class CallManager {
         // Forward audio to realtime transcription session
         if (associatedCallId) {
           const state = this.activeCalls.get(associatedCallId);
-          if (state?.realtimeSession) {
+          if (state?.sttSession) {
             const audioData = this.extractInboundAudio(msgBuffer);
             if (audioData) {
-              state.realtimeSession.sendAudio(audioData);
+              state.sttSession.sendAudio(audioData);
             }
           }
         }
@@ -155,7 +150,6 @@ export class CallManager {
     try {
       const msg = JSON.parse(msgBuffer.toString());
       if (msg.event === 'media' && msg.media?.payload) {
-        // Only capture inbound audio (user's voice), not outbound (our TTS)
         const track = msg.media?.track;
         if (track === 'inbound' || track === 'inbound_track') {
           return Buffer.from(msg.media.payload, 'base64');
@@ -177,7 +171,7 @@ export class CallManager {
           const event = JSON.parse(body);
           await this.handleTelnyxWebhook(event, res);
         } catch (error) {
-          console.error('Error parsing Telnyx webhook:', error);
+          console.error('Error parsing webhook:', error);
           res.writeHead(400);
           res.end('Invalid JSON');
         }
@@ -185,7 +179,7 @@ export class CallManager {
       return;
     }
 
-    // Twilio TwiML response
+    // XML response for media stream connection
     const streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
     const xml = this.config.providers.phone.getStreamConnectXml(streamUrl);
     res.writeHead(200, { 'Content-Type': 'application/xml' });
@@ -196,16 +190,13 @@ export class CallManager {
     const eventType = event.data?.event_type;
     const callControlId = event.data?.payload?.call_control_id;
 
-    console.error(`Telnyx webhook: ${eventType}`);
+    console.error(`Phone webhook: ${eventType}`);
 
     // Always respond 200 OK immediately
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
 
     if (!callControlId) return;
-
-    const provider = this.config.providers.phone;
-    if (!(provider instanceof TelnyxPhoneProvider)) return;
 
     try {
       switch (eventType) {
@@ -214,7 +205,7 @@ export class CallManager {
 
         case 'call.answered':
           const streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
-          await provider.startStreaming(callControlId, streamUrl);
+          await this.config.providers.phone.startStreaming(callControlId, streamUrl);
           console.error(`Started streaming for call ${callControlId}`);
           break;
 
@@ -231,7 +222,6 @@ export class CallManager {
           break;
 
         case 'call.machine.detection.ended':
-          // AMD completed - log the result
           const result = event.data?.payload?.result;
           console.error(`AMD result: ${result}`);
           break;
@@ -241,19 +231,17 @@ export class CallManager {
           break;
       }
     } catch (error) {
-      console.error(`Error handling Telnyx webhook ${eventType}:`, error);
+      console.error(`Error handling webhook ${eventType}:`, error);
     }
   }
 
   async initiateCall(message: string): Promise<{ callId: string; response: string }> {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
 
-    // Create realtime transcription session
-    const realtimeSession = this.createRealtimeSession();
-    if (realtimeSession) {
-      await realtimeSession.connect();
-      console.error(`[${callId}] Realtime transcription session connected`);
-    }
+    // Create realtime transcription session via provider
+    const sttSession = this.config.providers.stt.createSession();
+    await sttSession.connect();
+    console.error(`[${callId}] STT session connected`);
 
     const state: CallState = {
       callId,
@@ -263,7 +251,7 @@ export class CallManager {
       conversationHistory: [],
       startTime: Date.now(),
       hungUp: false,
-      realtimeSession,
+      sttSession,
     };
 
     this.activeCalls.set(callId, state);
@@ -288,22 +276,10 @@ export class CallManager {
 
       return { callId, response };
     } catch (error) {
-      state.realtimeSession?.close();
+      state.sttSession?.close();
       this.activeCalls.delete(callId);
       throw error;
     }
-  }
-
-  private createRealtimeSession(): RealtimeTranscriptionSession | null {
-    const apiKey = process.env.CALLME_OPENAI_API_KEY;
-    if (!apiKey) {
-      console.error('Warning: CALLME_OPENAI_API_KEY not set, realtime transcription disabled');
-      return null;
-    }
-
-    const provider = new OpenAIRealtimeSTTProvider();
-    provider.initialize({ apiKey });
-    return provider.createRealtimeSession();
   }
 
   async continueCall(callId: string, message: string): Promise<string> {
@@ -323,16 +299,13 @@ export class CallManager {
 
     await this.speak(state, message);
 
-    // Actually hang up the call via Telnyx API
+    // Hang up the call via phone provider
     if (state.callControlId) {
-      const provider = this.config.providers.phone;
-      if (provider instanceof TelnyxPhoneProvider) {
-        await provider.hangup(state.callControlId);
-      }
+      await this.config.providers.phone.hangup(state.callControlId);
     }
 
-    // Close realtime transcription session
-    state.realtimeSession?.close();
+    // Close sessions
+    state.sttSession?.close();
     state.ws?.close();
     state.hungUp = true;
 
@@ -355,24 +328,20 @@ export class CallManager {
   }
 
   private async speakAndListen(state: CallState, text: string): Promise<string> {
-    // Speak
     await this.speak(state, text);
-
-    // Listen using realtime transcription
     return await this.listen(state);
   }
 
   private async speak(state: CallState, text: string): Promise<void> {
     console.error(`[${state.callId}] Speaking: ${text.substring(0, 50)}...`);
 
-    const ttsProvider = this.config.providers.tts as any;
+    const tts = this.config.providers.tts;
 
     // Use streaming if available for lower latency
-    if (typeof ttsProvider.synthesizeStream === 'function') {
-      await this.speakStreaming(state, text, ttsProvider);
+    if (tts.synthesizeStream) {
+      await this.speakStreaming(state, text, tts.synthesizeStream.bind(tts));
     } else {
-      // Fallback to non-streaming
-      const pcmData = await this.config.providers.tts.synthesize(text);
+      const pcmData = await tts.synthesize(text);
       await this.sendAudio(state, pcmData);
     }
 
@@ -380,45 +349,45 @@ export class CallManager {
     console.error(`[${state.callId}] Speaking done`);
   }
 
-  private async speakStreaming(state: CallState, text: string, ttsProvider: any): Promise<void> {
+  private async speakStreaming(
+    state: CallState,
+    text: string,
+    synthesizeStream: (text: string) => AsyncGenerator<Buffer>
+  ): Promise<void> {
     let pendingPcm = Buffer.alloc(0);
     let pendingMuLaw = Buffer.alloc(0);
     const OUTPUT_CHUNK_SIZE = 160; // 20ms at 8kHz
-    const SAMPLES_PER_RESAMPLE = 6; // Need 6 bytes (3 samples) of 24kHz to get 1 sample at 8kHz
+    const SAMPLES_PER_RESAMPLE = 6; // 6 bytes (3 samples) at 24kHz -> 1 sample at 8kHz
 
-    for await (const chunk of ttsProvider.synthesizeStream(text)) {
-      // Accumulate PCM data
+    for await (const chunk of synthesizeStream(text)) {
       pendingPcm = Buffer.concat([pendingPcm, chunk]);
 
-      // Process complete resample units (6 bytes = 3 samples at 24kHz -> 1 sample at 8kHz)
       const completeUnits = Math.floor(pendingPcm.length / SAMPLES_PER_RESAMPLE);
       if (completeUnits > 0) {
         const bytesToProcess = completeUnits * SAMPLES_PER_RESAMPLE;
         const toProcess = pendingPcm.subarray(0, bytesToProcess);
         pendingPcm = pendingPcm.subarray(bytesToProcess);
 
-        // Resample and convert to mu-law
         const resampled = this.resample24kTo8k(toProcess);
         const muLaw = this.pcmToMuLaw(resampled);
         pendingMuLaw = Buffer.concat([pendingMuLaw, muLaw]);
 
-        // Send complete chunks
         while (pendingMuLaw.length >= OUTPUT_CHUNK_SIZE) {
-          const chunk = pendingMuLaw.subarray(0, OUTPUT_CHUNK_SIZE);
+          const audioChunk = pendingMuLaw.subarray(0, OUTPUT_CHUNK_SIZE);
           pendingMuLaw = pendingMuLaw.subarray(OUTPUT_CHUNK_SIZE);
 
           if (state.ws?.readyState === WebSocket.OPEN) {
             state.ws.send(JSON.stringify({
               event: 'media',
-              media: { payload: chunk.toString('base64') },
+              media: { payload: audioChunk.toString('base64') },
             }));
           }
-          await new Promise((resolve) => setTimeout(resolve, 18)); // Slightly faster than 20ms
+          await new Promise((resolve) => setTimeout(resolve, 18));
         }
       }
     }
 
-    // Send any remaining audio
+    // Send remaining audio
     if (pendingMuLaw.length > 0 && state.ws?.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({
         event: 'media',
@@ -445,15 +414,13 @@ export class CallManager {
   }
 
   private async listen(state: CallState): Promise<string> {
-    console.error(`[${state.callId}] Listening (realtime transcription)...`);
+    console.error(`[${state.callId}] Listening...`);
 
-    if (!state.realtimeSession) {
-      throw new Error('Realtime transcription session not available');
+    if (!state.sttSession) {
+      throw new Error('STT session not available');
     }
 
-    // Wait for transcript from the realtime session
-    // The server VAD handles turn detection automatically
-    const transcript = await state.realtimeSession.waitForTranscript(30000);
+    const transcript = await state.sttSession.waitForTranscript(30000);
 
     if (state.hungUp) {
       throw new Error('Call was hung up by user');

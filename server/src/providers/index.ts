@@ -2,13 +2,13 @@
  * Provider Factory
  *
  * Creates and configures providers based on environment variables.
- * Uses Telnyx for phone and OpenAI for TTS.
- * STT is handled by OpenAI Realtime API directly in phone-call.ts.
+ * Uses Telnyx for phone, OpenAI for TTS, and OpenAI Realtime for STT.
  */
 
-import type { PhoneProvider, TTSProvider } from './types.js';
+import type { PhoneProvider, TTSProvider, RealtimeSTTProvider, ProviderRegistry } from './types.js';
 import { TelnyxPhoneProvider } from './phone-telnyx.js';
 import { OpenAITTSProvider } from './tts-openai.js';
+import { OpenAIRealtimeSTTProvider } from './stt-openai-realtime.js';
 
 export * from './types.js';
 
@@ -18,9 +18,10 @@ export interface ProviderConfig {
   phoneAuthToken: string;   // Telnyx API Key
   phoneNumber: string;
 
-  // TTS (OpenAI)
+  // OpenAI (TTS + STT)
   openaiApiKey: string;
   ttsVoice?: string;
+  sttModel?: string;
 }
 
 export function loadProviderConfig(): ProviderConfig {
@@ -30,6 +31,7 @@ export function loadProviderConfig(): ProviderConfig {
     phoneNumber: process.env.CALLME_PHONE_NUMBER || '',
     openaiApiKey: process.env.CALLME_OPENAI_API_KEY || '',
     ttsVoice: process.env.CALLME_TTS_VOICE || 'onyx',
+    sttModel: process.env.CALLME_STT_MODEL || 'gpt-4o-transcribe',
   };
 }
 
@@ -52,15 +54,20 @@ export function createTTSProvider(config: ProviderConfig): TTSProvider {
   return provider;
 }
 
-export interface ProviderRegistry {
-  phone: PhoneProvider;
-  tts: TTSProvider;
+export function createSTTProvider(config: ProviderConfig): RealtimeSTTProvider {
+  const provider = new OpenAIRealtimeSTTProvider();
+  provider.initialize({
+    apiKey: config.openaiApiKey,
+    model: config.sttModel,
+  });
+  return provider;
 }
 
 export function createProviders(config: ProviderConfig): ProviderRegistry {
   return {
     phone: createPhoneProvider(config),
     tts: createTTSProvider(config),
+    stt: createSTTProvider(config),
   };
 }
 
