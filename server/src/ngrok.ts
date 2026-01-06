@@ -5,6 +5,12 @@
 import ngrok from '@ngrok/ngrok';
 
 let listener: ngrok.Listener | null = null;
+let currentPort: number | null = null;
+let currentUrl: string | null = null;
+let intentionallyClosed = false;
+let reconnectAttempts = 0;
+const maxReconnectAttempts = 10;
+const baseReconnectDelayMs = 2000;
 
 /**
  * Start ngrok tunnel to expose local port
@@ -12,6 +18,13 @@ let listener: ngrok.Listener | null = null;
  * @returns Public ngrok URL
  */
 export async function startNgrok(port: number): Promise<string> {
+  intentionallyClosed = false;
+  reconnectAttempts = 0;
+  currentPort = port;
+  return doStartNgrok(port);
+}
+
+async function doStartNgrok(port: number): Promise<string> {
   const authtoken = process.env.CALLME_NGROK_AUTHTOKEN;
 
   if (!authtoken) {
@@ -33,15 +46,123 @@ export async function startNgrok(port: number): Promise<string> {
     throw new Error('Failed to get ngrok URL');
   }
 
+  currentUrl = url;
+  reconnectAttempts = 0;  // Reset on success
+  console.error(`[ngrok] Tunnel established: ${url}`);
+
+  // Monitor for disconnection
+  monitorTunnel();
+
   return url;
+}
+
+/**
+ * Monitor tunnel health and reconnect if needed
+ */
+async function monitorTunnel(): Promise<void> {
+  // Check tunnel health periodically
+  const checkInterval = setInterval(async () => {
+    if (intentionallyClosed) {
+      clearInterval(checkInterval);
+      return;
+    }
+
+    // Check if listener is still valid
+    if (!listener) {
+      clearInterval(checkInterval);
+      console.error('[ngrok] Tunnel lost, attempting reconnect...');
+      attemptReconnect();
+      return;
+    }
+
+    try {
+      const url = listener.url();
+      if (!url) {
+        clearInterval(checkInterval);
+        console.error('[ngrok] Tunnel URL lost, attempting reconnect...');
+        attemptReconnect();
+      }
+    } catch (error) {
+      clearInterval(checkInterval);
+      console.error('[ngrok] Tunnel check failed:', error);
+      attemptReconnect();
+    }
+  }, 30000);  // Check every 30 seconds
+}
+
+/**
+ * Attempt to reconnect the ngrok tunnel
+ */
+async function attemptReconnect(): Promise<void> {
+  if (intentionallyClosed || currentPort === null) {
+    return;
+  }
+
+  if (reconnectAttempts >= maxReconnectAttempts) {
+    console.error(`[ngrok] Max reconnect attempts (${maxReconnectAttempts}) reached, giving up`);
+    return;
+  }
+
+  reconnectAttempts++;
+  const delay = baseReconnectDelayMs * Math.pow(2, reconnectAttempts - 1);
+  console.error(`[ngrok] Reconnect attempt ${reconnectAttempts}/${maxReconnectAttempts} in ${delay}ms...`);
+
+  await new Promise(resolve => setTimeout(resolve, delay));
+
+  if (intentionallyClosed) {
+    console.error('[ngrok] Reconnect cancelled - tunnel intentionally closed');
+    return;
+  }
+
+  try {
+    // Clean up old listener
+    if (listener) {
+      try {
+        await listener.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+      listener = null;
+    }
+
+    const newUrl = await doStartNgrok(currentPort);
+    console.error(`[ngrok] Reconnected successfully: ${newUrl}`);
+
+    // Note: The URL may have changed. For custom domains it stays the same,
+    // but for free ngrok the URL changes on each reconnect.
+    if (newUrl !== currentUrl) {
+      console.error(`[ngrok] WARNING: Tunnel URL changed from ${currentUrl} to ${newUrl}`);
+      console.error('[ngrok] Phone provider webhooks may need to be updated');
+    }
+  } catch (error) {
+    console.error('[ngrok] Reconnect failed:', error);
+    // Try again
+    attemptReconnect();
+  }
+}
+
+/**
+ * Get the current ngrok URL
+ */
+export function getNgrokUrl(): string | null {
+  return currentUrl;
+}
+
+/**
+ * Check if ngrok tunnel is active
+ */
+export function isNgrokConnected(): boolean {
+  return listener !== null && !intentionallyClosed;
 }
 
 /**
  * Stop ngrok tunnel
  */
 export async function stopNgrok(): Promise<void> {
+  intentionallyClosed = true;
   if (listener) {
     await listener.close();
     listener = null;
   }
+  currentUrl = null;
 }

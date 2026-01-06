@@ -41,6 +41,10 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
   private pendingTranscript = '';
   private onTranscriptCallback: ((transcript: string) => void) | null = null;
   private onPartialCallback: ((partial: string) => void) | null = null;
+  private closed = false;  // True when intentionally closed
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectDelayMs = 1000;
 
   constructor(apiKey: string, model: string, silenceDurationMs: number) {
     this.apiKey = apiKey;
@@ -49,6 +53,12 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
   }
 
   async connect(): Promise<void> {
+    this.closed = false;
+    this.reconnectAttempts = 0;
+    return this.doConnect();
+  }
+
+  private async doConnect(): Promise<void> {
     return new Promise((resolve, reject) => {
       const url = 'wss://api.openai.com/v1/realtime?intent=transcription';
 
@@ -62,6 +72,7 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
       this.ws.on('open', () => {
         console.error('[RealtimeSTT] WebSocket connected');
         this.connected = true;
+        this.reconnectAttempts = 0;  // Reset on successful connection
 
         // Configure the transcription session
         this.sendEvent({
@@ -97,9 +108,14 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
         if (!this.connected) reject(error);
       });
 
-      this.ws.on('close', () => {
-        console.error('[RealtimeSTT] WebSocket closed');
+      this.ws.on('close', (code, reason) => {
+        console.error(`[RealtimeSTT] WebSocket closed (code: ${code}, reason: ${reason || 'none'})`);
         this.connected = false;
+
+        // Attempt reconnection if not intentionally closed
+        if (!this.closed) {
+          this.attemptReconnect();
+        }
       });
 
       setTimeout(() => {
@@ -108,6 +124,37 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
         }
       }, 10000);
     });
+  }
+
+  private async attemptReconnect(): Promise<void> {
+    if (this.closed) {
+      console.error('[RealtimeSTT] Not reconnecting - session intentionally closed');
+      return;
+    }
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error(`[RealtimeSTT] Max reconnect attempts (${this.maxReconnectAttempts}) reached, giving up`);
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const delay = this.reconnectDelayMs * Math.pow(2, this.reconnectAttempts - 1);  // Exponential backoff
+    console.error(`[RealtimeSTT] Attempting reconnect ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms...`);
+
+    await new Promise(resolve => setTimeout(resolve, delay));
+
+    if (this.closed) {
+      console.error('[RealtimeSTT] Reconnect cancelled - session was closed');
+      return;
+    }
+
+    try {
+      await this.doConnect();
+      console.error('[RealtimeSTT] Reconnected successfully');
+    } catch (error) {
+      console.error('[RealtimeSTT] Reconnect failed:', error);
+      // The close handler will trigger another reconnect attempt
+    }
   }
 
   private handleEvent(event: any): void {
@@ -185,6 +232,7 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
   }
 
   close(): void {
+    this.closed = true;  // Prevent reconnection attempts
     if (this.ws) {
       this.ws.close();
       this.ws = null;
