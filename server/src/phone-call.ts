@@ -104,22 +104,41 @@ export class CallManager {
     this.httpServer.on('upgrade', (request: IncomingMessage, socket: any, head: Buffer) => {
       const url = new URL(request.url!, `http://${request.headers.host}`);
       if (url.pathname === '/media-stream') {
-        // Try to find the call ID from token or fallback to most recent call
+        // Try to find the call ID from token
         const token = url.searchParams.get('token');
         let callId = token ? this.wsTokenToCallId.get(token) : null;
 
-        if (!callId) {
-          // Fallback: find the most recent active call (ngrok compatibility mode)
-          // Token lookup can fail due to timing issues with ngrok's free tier
-          const activeCallIds = Array.from(this.activeCalls.keys());
-          if (activeCallIds.length > 0) {
-            callId = activeCallIds[activeCallIds.length - 1];
-            console.error(`[WebSocket] Token not found, using fallback call ID: ${callId}`);
+        // Validate token if provided
+        if (token && callId) {
+          const state = this.activeCalls.get(callId);
+          if (!state || !validateWebSocketToken(state.wsToken, token)) {
+            console.error('[Security] Rejecting WebSocket: token validation failed');
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            socket.destroy();
+            return;
+          }
+          console.error(`[Security] WebSocket token validated for call ${callId}`);
+        } else if (!callId) {
+          // Token missing or not found - only allow fallback for ngrok free tier
+          const isNgrokFreeTier = new URL(this.config.publicUrl).hostname.endsWith('.ngrok-free.dev');
+          if (isNgrokFreeTier) {
+            // Fallback: find the most recent active call (ngrok compatibility mode)
+            // Token lookup can fail due to timing issues with ngrok's free tier
+            const activeCallIds = Array.from(this.activeCalls.keys());
+            if (activeCallIds.length > 0) {
+              callId = activeCallIds[activeCallIds.length - 1];
+              console.error(`[WebSocket] Token not found, using fallback call ID: ${callId} (ngrok compatibility mode)`);
+            } else {
+              // No active calls yet - create a placeholder and accept anyway
+              // The connection handler will associate it with the correct call
+              callId = `pending-${Date.now()}`;
+              console.error(`[WebSocket] No active calls, using placeholder: ${callId} (ngrok compatibility mode)`);
+            }
           } else {
-            // No active calls yet - create a placeholder and accept anyway
-            // The connection handler will associate it with the correct call
-            callId = `pending-${Date.now()}`;
-            console.error(`[WebSocket] No active calls, using placeholder: ${callId}`);
+            console.error('[Security] Rejecting WebSocket: missing or invalid token');
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            socket.destroy();
+            return;
           }
         }
 
@@ -162,7 +181,7 @@ export class CallManager {
               console.error(`[${callId}] Stream stopped`);
               msgState.hungUp = true;
             }
-          } catch {}
+          } catch { }
         }
 
         // Forward audio to realtime transcription session
@@ -205,7 +224,7 @@ export class CallManager {
           return Buffer.from(msg.media.payload, 'base64');
         }
       }
-    } catch {}
+    } catch { }
 
     return null;
   }
@@ -262,9 +281,17 @@ export class CallManager {
           const webhookUrl = `${this.config.publicUrl}/twiml`;
 
           if (!validateTwilioSignature(authToken, signature, webhookUrl, params)) {
-            // Log for debugging but proceed anyway - ngrok free tier causes signature mismatches
-            // In production with a stable domain, consider making this stricter
-            console.error('[Security] Twilio signature validation failed (proceeding anyway for ngrok compatibility)');
+            const isNgrokFreeTier = new URL(this.config.publicUrl).hostname.endsWith('.ngrok-free.dev');
+            if (isNgrokFreeTier) {
+              // Only log if ngrok free tier is used
+              // Log for debugging but proceed anyway - ngrok free tier causes signature mismatches
+              console.error('[Security] Twilio signature validation failed (proceeding anyway for ngrok compatibility)');
+            } else {
+              console.error('[Security] Rejecting Twilio webhook: invalid signature');
+              res.writeHead(401);
+              res.end('Invalid signature');
+              return;
+            }
           }
 
           await this.handleTwilioWebhook(params, res);
