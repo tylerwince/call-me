@@ -3,17 +3,29 @@
   "version": "1.0.0",
   "description": "Claude texts you via iMessage, Telegram, or Slack when it needs your input or wants to report progress",
   "author": {
-    "name": "ZeframLou",
-    "url": "https://github.com/ZeframLou"
+    "name": "tylerwince",
+    "url": "https://github.com/tylerwince"
   },
-  "repository": "https://github.com/ZeframLou/call-me",
+  "repository": "https://github.com/tylerwince/call-me",
   "license": "MIT",
-  "keywords": ["text", "messaging", "imessage", "telegram", "slack", "input"],
+  "keywords": [
+    "text",
+    "messaging",
+    "imessage",
+    "telegram",
+    "slack",
+    "input"
+  ],
   "skills": "./skills",
   "mcpServers": {
     "textme": {
       "command": "bun",
-      "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}/server", "start"],
+      "args": [
+        "run",
+        "--cwd",
+        "${CLAUDE_PLUGIN_ROOT}/server",
+        "start"
+      ],
       "env": {
         "TEXTME_PROVIDER": "${TEXTME_PROVIDER:-imessage}",
         "TEXTME_IMESSAGE_RECIPIENT": "${TEXTME_IMESSAGE_RECIPIENT}",
