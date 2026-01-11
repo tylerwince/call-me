@@ -1,130 +1,116 @@
 /**
  * Provider Factory
  *
- * Creates and configures providers based on environment variables.
- * Supports Telnyx or Twilio for phone, OpenAI for TTS and Realtime STT.
+ * Creates and configures text providers based on environment variables.
+ * Supports iMessage, Telegram, and Slack.
  */
 
-import type { PhoneProvider, TTSProvider, RealtimeSTTProvider, ProviderRegistry } from './types.js';
-import { TelnyxPhoneProvider } from './phone-telnyx.js';
-import { TwilioPhoneProvider } from './phone-twilio.js';
-import { OpenAITTSProvider } from './tts-openai.js';
-import { OpenAIRealtimeSTTProvider } from './stt-openai-realtime.js';
+import type { TextProvider, TextProviderConfig } from './types.js';
+import { IMessageProvider } from './text-imessage.js';
+import { TelegramProvider } from './text-telegram.js';
+import { SlackProvider } from './text-slack.js';
 
 export * from './types.js';
 
-export type PhoneProviderType = 'telnyx' | 'twilio';
+export type TextProviderType = 'imessage' | 'telegram' | 'slack';
 
 export interface ProviderConfig {
-  // Phone provider selection
-  phoneProvider: PhoneProviderType;
+  // Provider selection
+  provider: TextProviderType;
 
-  // Phone credentials (interpretation depends on provider)
-  // Telnyx: accountSid = Connection ID, authToken = API Key
-  // Twilio: accountSid = Account SID, authToken = Auth Token
-  phoneAccountSid: string;
-  phoneAuthToken: string;
-  phoneNumber: string;
+  // iMessage
+  imessageRecipient?: string;
 
-  // Telnyx webhook public key (for signature verification)
-  // Get from: Mission Control > Account Settings > Keys & Credentials > Public Key
-  telnyxPublicKey?: string;
+  // Telegram
+  telegramBotToken?: string;
+  telegramChatId?: string;
 
-  // OpenAI (TTS + STT)
-  openaiApiKey: string;
-  ttsVoice?: string;
-  sttModel?: string;
-  sttSilenceDurationMs?: number;
+  // Slack
+  slackBotToken?: string;
+  slackAppToken?: string;
+  slackChannel?: string;
+
+  // Common
+  messageTimeoutMs: number;
 }
 
 export function loadProviderConfig(): ProviderConfig {
-  const sttSilenceDurationMs = process.env.CALLME_STT_SILENCE_DURATION_MS
-    ? parseInt(process.env.CALLME_STT_SILENCE_DURATION_MS, 10)
-    : undefined;
+  const messageTimeoutMs = process.env.TEXTME_MESSAGE_TIMEOUT_MS
+    ? parseInt(process.env.TEXTME_MESSAGE_TIMEOUT_MS, 10)
+    : 300000; // 5 minutes default
 
-  // Default to telnyx if not specified
-  const phoneProvider = (process.env.CALLME_PHONE_PROVIDER || 'telnyx') as PhoneProviderType;
+  const provider = (process.env.TEXTME_PROVIDER || 'imessage') as TextProviderType;
 
   return {
-    phoneProvider,
-    phoneAccountSid: process.env.CALLME_PHONE_ACCOUNT_SID || '',
-    phoneAuthToken: process.env.CALLME_PHONE_AUTH_TOKEN || '',
-    phoneNumber: process.env.CALLME_PHONE_NUMBER || '',
-    telnyxPublicKey: process.env.CALLME_TELNYX_PUBLIC_KEY,
-    openaiApiKey: process.env.CALLME_OPENAI_API_KEY || '',
-    ttsVoice: process.env.CALLME_TTS_VOICE || 'onyx',
-    sttModel: process.env.CALLME_STT_MODEL || 'gpt-4o-transcribe',
-    sttSilenceDurationMs,
+    provider,
+    imessageRecipient: process.env.TEXTME_IMESSAGE_RECIPIENT,
+    telegramBotToken: process.env.TEXTME_TELEGRAM_BOT_TOKEN,
+    telegramChatId: process.env.TEXTME_TELEGRAM_CHAT_ID,
+    slackBotToken: process.env.TEXTME_SLACK_BOT_TOKEN,
+    slackAppToken: process.env.TEXTME_SLACK_APP_TOKEN,
+    slackChannel: process.env.TEXTME_SLACK_CHANNEL,
+    messageTimeoutMs,
   };
 }
 
-export function createPhoneProvider(config: ProviderConfig): PhoneProvider {
-  let provider: PhoneProvider;
-
-  if (config.phoneProvider === 'twilio') {
-    provider = new TwilioPhoneProvider();
-  } else {
-    provider = new TelnyxPhoneProvider();
+export function createTextProvider(config: ProviderConfig): TextProvider {
+  switch (config.provider) {
+    case 'imessage':
+      return new IMessageProvider();
+    case 'telegram':
+      return new TelegramProvider();
+    case 'slack':
+      return new SlackProvider();
+    default:
+      throw new Error(`Unknown provider: ${config.provider}`);
   }
-
-  provider.initialize({
-    accountSid: config.phoneAccountSid,
-    authToken: config.phoneAuthToken,
-    phoneNumber: config.phoneNumber,
-  });
-
-  return provider;
 }
 
-export function createTTSProvider(config: ProviderConfig): TTSProvider {
-  const provider = new OpenAITTSProvider();
-  provider.initialize({
-    apiKey: config.openaiApiKey,
-    voice: config.ttsVoice,
-  });
-  return provider;
-}
-
-export function createSTTProvider(config: ProviderConfig): RealtimeSTTProvider {
-  const provider = new OpenAIRealtimeSTTProvider();
-  provider.initialize({
-    apiKey: config.openaiApiKey,
-    model: config.sttModel,
-    silenceDurationMs: config.sttSilenceDurationMs,
-  });
-  return provider;
-}
-
-export function createProviders(config: ProviderConfig): ProviderRegistry {
+export function getProviderConfig(config: ProviderConfig): TextProviderConfig {
   return {
-    phone: createPhoneProvider(config),
-    tts: createTTSProvider(config),
-    stt: createSTTProvider(config),
+    imessageRecipient: config.imessageRecipient,
+    telegramBotToken: config.telegramBotToken,
+    telegramChatId: config.telegramChatId,
+    slackBotToken: config.slackBotToken,
+    slackAppToken: config.slackAppToken,
+    slackChannel: config.slackChannel,
+    messageTimeoutMs: config.messageTimeoutMs,
   };
 }
 
 /**
- * Validate that required config is present
+ * Validate that required config is present for the selected provider
  */
 export function validateProviderConfig(config: ProviderConfig): string[] {
   const errors: string[] = [];
 
-  // Provider-specific credential descriptions
-  const credentialDesc = config.phoneProvider === 'twilio'
-    ? { accountSid: 'Twilio Account SID', authToken: 'Twilio Auth Token' }
-    : { accountSid: 'Telnyx Connection ID', authToken: 'Telnyx API Key' };
+  switch (config.provider) {
+    case 'imessage':
+      if (!config.imessageRecipient) {
+        errors.push('Missing TEXTME_IMESSAGE_RECIPIENT (phone number or email)');
+      }
+      break;
 
-  if (!config.phoneAccountSid) {
-    errors.push(`Missing CALLME_PHONE_ACCOUNT_SID (${credentialDesc.accountSid})`);
-  }
-  if (!config.phoneAuthToken) {
-    errors.push(`Missing CALLME_PHONE_AUTH_TOKEN (${credentialDesc.authToken})`);
-  }
-  if (!config.phoneNumber) {
-    errors.push('Missing CALLME_PHONE_NUMBER');
-  }
-  if (!config.openaiApiKey) {
-    errors.push('Missing CALLME_OPENAI_API_KEY');
+    case 'telegram':
+      if (!config.telegramBotToken) {
+        errors.push('Missing TEXTME_TELEGRAM_BOT_TOKEN');
+      }
+      if (!config.telegramChatId) {
+        errors.push('Missing TEXTME_TELEGRAM_CHAT_ID');
+      }
+      break;
+
+    case 'slack':
+      if (!config.slackBotToken) {
+        errors.push('Missing TEXTME_SLACK_BOT_TOKEN (xoxb-...)');
+      }
+      if (!config.slackAppToken) {
+        errors.push('Missing TEXTME_SLACK_APP_TOKEN (xapp-...)');
+      }
+      if (!config.slackChannel) {
+        errors.push('Missing TEXTME_SLACK_CHANNEL (channel ID)');
+      }
+      break;
   }
 
   return errors;
