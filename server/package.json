@@ -1,7 +1,7 @@
 {
-  "name": "callme-mcp",
-  "version": "1.0.2",
-  "description": "MCP server that lets Claude call you on the phone",
+  "name": "textme-mcp",
+  "version": "1.0.0",
+  "description": "MCP server that lets Claude text you via iMessage, Telegram, or Slack",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
@@ -11,13 +11,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
-    "@ngrok/ngrok": "^1.4.1",
-    "openai": "^4.77.3",
-    "ws": "^8.18.0"
+    "@slack/bolt": "^4.1.0",
+    "grammy": "^1.30.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
-    "@types/ws": "^8.5.13",
     "bun-types": "latest"
   }
 }

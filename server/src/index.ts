@@ -1,50 +1,40 @@
 #!/usr/bin/env bun
 
 /**
- * CallMe MCP Server
+ * TextMe MCP Server
  *
- * A stdio-based MCP server that lets Claude call you on the phone.
- * Automatically starts ngrok to expose webhooks for phone providers.
+ * A stdio-based MCP server that lets Claude text you via iMessage, Telegram, or Slack.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { CallManager, loadServerConfig } from './phone-call.js';
-import { startNgrok, stopNgrok } from './ngrok.js';
+import { ConversationManager, loadServerConfig } from './text-conversation.js';
 
 async function main() {
-  // Get port for HTTP server
-  const port = parseInt(process.env.CALLME_PORT || '3333', 10);
-
-  // Start ngrok tunnel to get public URL
-  console.error('Starting ngrok tunnel...');
-  let publicUrl: string;
-  try {
-    publicUrl = await startNgrok(port);
-    console.error(`ngrok tunnel: ${publicUrl}`);
-  } catch (error) {
-    console.error('Failed to start ngrok:', error instanceof Error ? error.message : error);
-    process.exit(1);
-  }
-
-  // Load server config with the ngrok URL
+  // Load server config
   let serverConfig;
   try {
-    serverConfig = loadServerConfig(publicUrl);
+    serverConfig = loadServerConfig();
   } catch (error) {
     console.error('Configuration error:', error instanceof Error ? error.message : error);
-    await stopNgrok();
     process.exit(1);
   }
 
-  // Create call manager and start HTTP server for webhooks
-  const callManager = new CallManager(serverConfig);
-  callManager.startServer();
+  // Create conversation manager
+  const conversationManager = new ConversationManager(serverConfig);
+
+  // Initialize the provider (start listening for messages)
+  try {
+    await conversationManager.initialize();
+  } catch (error) {
+    console.error('Failed to initialize provider:', error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
 
   // Create stdio MCP server
   const mcpServer = new Server(
-    { name: 'callme', version: '3.0.0' },
+    { name: 'textme', version: '1.0.0' },
     { capabilities: { tools: {} } }
   );
 
@@ -53,53 +43,50 @@ async function main() {
     return {
       tools: [
         {
-          name: 'initiate_call',
-          description: 'Start a phone call with the user. Use when you need voice input, want to report completed work, or need real-time discussion.',
+          name: 'send_message',
+          description: 'Send a text message to the user. By default, waits for their reply.',
           inputSchema: {
             type: 'object',
             properties: {
               message: {
                 type: 'string',
-                description: 'What you want to say to the user. Be natural and conversational.',
+                description: 'The message to send to the user.',
+              },
+              wait_for_reply: {
+                type: 'boolean',
+                description: 'Whether to wait for the user to reply. Default: true',
+                default: true,
               },
             },
             required: ['message'],
           },
         },
         {
-          name: 'continue_call',
-          description: 'Continue an active call with a follow-up message.',
+          name: 'wait_for_reply',
+          description: 'Wait for the user to send a message.',
           inputSchema: {
             type: 'object',
             properties: {
-              call_id: { type: 'string', description: 'The call ID from initiate_call' },
-              message: { type: 'string', description: 'Your follow-up message' },
+              timeout_seconds: {
+                type: 'number',
+                description: 'Maximum time to wait in seconds. Default: 300 (5 minutes)',
+                default: 300,
+              },
             },
-            required: ['call_id', 'message'],
           },
         },
         {
-          name: 'speak_to_user',
-          description: 'Speak a message on an active call without waiting for a response. Use this to acknowledge requests or provide status updates before starting time-consuming operations.',
+          name: 'get_history',
+          description: 'Get recent messages from the conversation.',
           inputSchema: {
             type: 'object',
             properties: {
-              call_id: { type: 'string', description: 'The call ID from initiate_call' },
-              message: { type: 'string', description: 'What to say to the user' },
+              limit: {
+                type: 'number',
+                description: 'Maximum number of messages to return. Default: 10',
+                default: 10,
+              },
             },
-            required: ['call_id', 'message'],
-          },
-        },
-        {
-          name: 'end_call',
-          description: 'End an active call with a closing message.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              call_id: { type: 'string', description: 'The call ID from initiate_call' },
-              message: { type: 'string', description: 'Your closing message (say goodbye!)' },
-            },
-            required: ['call_id', 'message'],
           },
         },
       ],
@@ -109,42 +96,69 @@ async function main() {
   // Handle tool calls
   mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      if (request.params.name === 'initiate_call') {
-        const { message } = request.params.arguments as { message: string };
-        const result = await callManager.initiateCall(message);
+      if (request.params.name === 'send_message') {
+        const { message, wait_for_reply = true } = request.params.arguments as {
+          message: string;
+          wait_for_reply?: boolean;
+        };
+
+        const result = await conversationManager.sendMessage(message, wait_for_reply);
+
+        if (wait_for_reply && result.reply) {
+          return {
+            content: [{
+              type: 'text',
+              text: `Message sent.\n\nUser's reply:\n${result.reply}`,
+            }],
+          };
+        }
 
         return {
           content: [{
             type: 'text',
-            text: `Call initiated successfully.\n\nCall ID: ${result.callId}\n\nUser's response:\n${result.response}\n\nUse continue_call to ask follow-ups or end_call to hang up.`,
+            text: 'Message sent.',
           }],
         };
       }
 
-      if (request.params.name === 'continue_call') {
-        const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        const response = await callManager.continueCall(call_id, message);
+      if (request.params.name === 'wait_for_reply') {
+        const { timeout_seconds = 300 } = request.params.arguments as {
+          timeout_seconds?: number;
+        };
+
+        const reply = await conversationManager.waitForReply(timeout_seconds * 1000);
 
         return {
-          content: [{ type: 'text', text: `User's response:\n${response}` }],
+          content: [{
+            type: 'text',
+            text: `User's message:\n${reply}`,
+          }],
         };
       }
 
-      if (request.params.name === 'speak_to_user') {
-        const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        await callManager.speakOnly(call_id, message);
+      if (request.params.name === 'get_history') {
+        const { limit = 10 } = request.params.arguments as { limit?: number };
+
+        const history = await conversationManager.getHistory(limit);
+
+        if (history.length === 0) {
+          return {
+            content: [{
+              type: 'text',
+              text: 'No messages in conversation history.',
+            }],
+          };
+        }
+
+        const formatted = history
+          .map(msg => `${msg.speaker === 'claude' ? 'Claude' : 'User'}: ${msg.message}`)
+          .join('\n\n');
 
         return {
-          content: [{ type: 'text', text: `Message spoken: "${message}"` }],
-        };
-      }
-
-      if (request.params.name === 'end_call') {
-        const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        const { durationSeconds } = await callManager.endCall(call_id, message);
-
-        return {
-          content: [{ type: 'text', text: `Call ended. Duration: ${durationSeconds}s` }],
+          content: [{
+            type: 'text',
+            text: `Conversation history (${history.length} messages):\n\n${formatted}`,
+          }],
         };
       }
 
@@ -163,16 +177,14 @@ async function main() {
   await mcpServer.connect(transport);
 
   console.error('');
-  console.error('CallMe MCP server ready');
-  console.error(`Phone: ${serverConfig.phoneNumber} -> ${serverConfig.userPhoneNumber}`);
-  console.error(`Providers: phone=${serverConfig.providers.phone.name}, tts=${serverConfig.providers.tts.name}, stt=${serverConfig.providers.stt.name}`);
+  console.error('TextMe MCP server ready');
+  console.error(`Provider: ${conversationManager.getProviderName()}`);
   console.error('');
 
   // Graceful shutdown
-  const shutdown = async () => {
+  const shutdown = () => {
     console.error('\nShutting down...');
-    callManager.shutdown();
-    await stopNgrok();
+    conversationManager.shutdown();
     process.exit(0);
   };
 

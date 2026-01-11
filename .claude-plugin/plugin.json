@@ -1,30 +1,28 @@
 {
-  "name": "callme",
-  "version": "1.0.2",
-  "description": "Claude calls you on the phone when it needs your input or wants to report progress",
+  "name": "textme",
+  "version": "1.0.0",
+  "description": "Claude texts you via iMessage, Telegram, or Slack when it needs your input or wants to report progress",
   "author": {
     "name": "ZeframLou",
     "url": "https://github.com/ZeframLou"
   },
   "repository": "https://github.com/ZeframLou/call-me",
   "license": "MIT",
-  "keywords": ["phone", "voice", "calls", "input"],
+  "keywords": ["text", "messaging", "imessage", "telegram", "slack", "input"],
   "skills": "./skills",
   "mcpServers": {
-    "callme": {
+    "textme": {
       "command": "bun",
       "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}/server", "start"],
       "env": {
-        "CALLME_PHONE_ACCOUNT_SID": "${CALLME_PHONE_ACCOUNT_SID}",
-        "CALLME_PHONE_AUTH_TOKEN": "${CALLME_PHONE_AUTH_TOKEN}",
-        "CALLME_PHONE_NUMBER": "${CALLME_PHONE_NUMBER}",
-        "CALLME_USER_PHONE_NUMBER": "${CALLME_USER_PHONE_NUMBER}",
-        "CALLME_OPENAI_API_KEY": "${CALLME_OPENAI_API_KEY}",
-        "CALLME_TTS_VOICE": "${CALLME_TTS_VOICE:-onyx}",
-        "CALLME_NGROK_AUTHTOKEN": "${CALLME_NGROK_AUTHTOKEN}",
-        "CALLME_PORT": "${CALLME_PORT:-3333}",
-        "CALLME_TRANSCRIPT_TIMEOUT_MS": "${CALLME_TRANSCRIPT_TIMEOUT_MS:-180000}",
-        "CALLME_STT_SILENCE_DURATION_MS": "${CALLME_STT_SILENCE_DURATION_MS:-800}"
+        "TEXTME_PROVIDER": "${TEXTME_PROVIDER:-imessage}",
+        "TEXTME_IMESSAGE_RECIPIENT": "${TEXTME_IMESSAGE_RECIPIENT}",
+        "TEXTME_TELEGRAM_BOT_TOKEN": "${TEXTME_TELEGRAM_BOT_TOKEN}",
+        "TEXTME_TELEGRAM_CHAT_ID": "${TEXTME_TELEGRAM_CHAT_ID}",
+        "TEXTME_SLACK_BOT_TOKEN": "${TEXTME_SLACK_BOT_TOKEN}",
+        "TEXTME_SLACK_APP_TOKEN": "${TEXTME_SLACK_APP_TOKEN}",
+        "TEXTME_SLACK_CHANNEL": "${TEXTME_SLACK_CHANNEL}",
+        "TEXTME_MESSAGE_TIMEOUT_MS": "${TEXTME_MESSAGE_TIMEOUT_MS:-300000}"
       }
     }
   },
@@ -34,7 +32,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "SILENTLY evaluate if you should call the user. ONLY use initiate_call if you completed significant work and need to discuss next steps, or are genuinely blocked. Do NOT output any text - either call or do nothing."
+            "prompt": "SILENTLY evaluate if you should message the user. ONLY use send_message if you completed significant work and need to discuss next steps, or are genuinely blocked. Do NOT output any text - either message or do nothing."
           }
         ]
       }

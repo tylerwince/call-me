@@ -1,146 +1,68 @@
 /**
- * Provider Interfaces
+ * Text Provider Interfaces
  *
- * Abstractions for Phone, STT, and TTS services.
- * All providers use realtime streaming where applicable.
+ * Abstractions for text messaging services (iMessage, Telegram, Slack).
  */
 
 /**
- * Phone Provider - handles initiating calls and WebSocket media streams
+ * A message in a conversation
  */
-export interface PhoneProvider {
-  readonly name: string;
-
-  /**
-   * Initialize the provider with credentials
-   */
-  initialize(config: PhoneConfig): void;
-
-  /**
-   * Initiate an outbound call
-   * @returns Call control ID from the provider
-   */
-  initiateCall(to: string, from: string, webhookUrl: string): Promise<string>;
-
-  /**
-   * Hang up an active call
-   */
-  hangup(callControlId: string): Promise<void>;
-
-  /**
-   * Start media streaming for a call
-   */
-  startStreaming(callControlId: string, streamUrl: string): Promise<void>;
-
-  /**
-   * Get XML response for connecting media stream (used in webhooks)
-   */
-  getStreamConnectXml(streamUrl: string): string;
-}
-
-export interface PhoneConfig {
-  accountSid: string;
-  authToken: string;
-  phoneNumber: string;
+export interface Message {
+  text: string;
+  fromUser: boolean;
+  timestamp: Date;
 }
 
 /**
- * Realtime Speech-to-Text Provider
- * Provides streaming transcription with automatic turn detection
+ * Configuration for text providers
  */
-export interface RealtimeSTTProvider {
+export interface TextProviderConfig {
+  // iMessage
+  imessageRecipient?: string;
+
+  // Telegram
+  telegramBotToken?: string;
+  telegramChatId?: string;
+
+  // Slack
+  slackBotToken?: string;
+  slackAppToken?: string;
+  slackChannel?: string;
+
+  // Common
+  messageTimeoutMs?: number;
+}
+
+/**
+ * Text Provider - handles sending and receiving text messages
+ */
+export interface TextProvider {
   readonly name: string;
 
   /**
    * Initialize the provider
    */
-  initialize(config: STTConfig): void;
+  initialize(config: TextProviderConfig): Promise<void>;
 
   /**
-   * Create a new realtime transcription session
+   * Send a message to the configured recipient
    */
-  createSession(): RealtimeSTTSession;
-}
-
-/**
- * Realtime STT Session - handles streaming audio and receiving transcripts
- */
-export interface RealtimeSTTSession {
-  /**
-   * Connect to the transcription service
-   */
-  connect(): Promise<void>;
+  sendMessage(message: string): Promise<void>;
 
   /**
-   * Send audio data to the transcription session
-   * @param audio mu-law audio buffer (8kHz mono)
+   * Wait for the next message from the user
+   * @param timeoutMs Maximum time to wait (default: 5 minutes)
    */
-  sendAudio(audio: Buffer): void;
+  waitForMessage(timeoutMs?: number): Promise<string>;
 
   /**
-   * Wait for the next complete transcript (after VAD detects end of speech)
-   * @param timeoutMs Maximum time to wait
+   * Get recent messages from the conversation
+   * @param limit Maximum number of messages to return
    */
-  waitForTranscript(timeoutMs?: number): Promise<string>;
+  getRecentMessages(limit?: number): Promise<Message[]>;
 
   /**
-   * Set callback for partial transcriptions (streaming)
+   * Shutdown the provider and clean up resources
    */
-  onPartial(callback: (partial: string) => void): void;
-
-  /**
-   * Close the session
-   */
-  close(): void;
-
-  /**
-   * Check if session is connected
-   */
-  isConnected(): boolean;
-}
-
-export interface STTConfig {
-  apiKey?: string;
-  apiUrl?: string;
-  model?: string;
-  silenceDurationMs?: number;
-}
-
-/**
- * Text-to-Speech Provider
- */
-export interface TTSProvider {
-  readonly name: string;
-
-  /**
-   * Initialize the provider
-   */
-  initialize(config: TTSConfig): void;
-
-  /**
-   * Convert text to speech
-   * @returns PCM audio buffer (16-bit, mono, 24kHz)
-   */
-  synthesize(text: string): Promise<Buffer>;
-
-  /**
-   * Stream TTS audio as chunks arrive (optional, for lower latency)
-   */
-  synthesizeStream?(text: string): AsyncGenerator<Buffer>;
-}
-
-export interface TTSConfig {
-  apiKey?: string;
-  apiUrl?: string;
-  voice?: string;
-  model?: string;
-}
-
-/**
- * Provider registry for dependency injection
- */
-export interface ProviderRegistry {
-  phone: PhoneProvider;
-  tts: TTSProvider;
-  stt: RealtimeSTTProvider;
+  shutdown(): void;
 }
